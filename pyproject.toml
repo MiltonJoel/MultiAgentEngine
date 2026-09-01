@@ -1,0 +1,22 @@
+[project]
+name = "multiagent-engine"
+version = "0.2.0"
+description = "LangGraph loop driving the claude and codex CLIs against a repo until a spec is implemented, tested and audited."
+requires-python = ">=3.10"
+dependencies = ["langgraph>=1.2,<2"]
+
+[project.scripts]
+mae = "engine.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["engine", "engine.nodes"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
