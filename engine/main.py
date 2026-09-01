@@ -149,6 +149,10 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], test_cmd: lis
         print("[git] checkpoints disabled (--no-git)")
     elif git.is_repo(str(repo)):
         branch = git.start_branch(str(repo))
+        if branch:
+            # commit whatever was already dirty on its own, so every later checkpoint
+            # is the coder's work alone and `git diff HEAD~1` means what it says
+            git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run")
     else:
         print(f"[git] {repo} is not a git repository — running without checkpoints or rollback")
 
