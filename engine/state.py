@@ -6,9 +6,10 @@ class GraphState(TypedDict):
     plan: str  # path to the work queue; the coder reads and updates it in place
     repo: str
     allow_dirs: list[str]  # extra dirs the coder may read, e.g. a reference codebase
-    test_cmd: list[str]  # deterministic gate; [] disables it
-    lint_cmd: list[str]
-    git_branch: str | None  # branch holding this run's checkpoints; None = repo not under git
+    agents: dict[str, str]  # role -> CLI name, e.g. {"coder": "claude"}
+    gates: list[dict]  # deterministic gate commands: [{cmd: [...], ok_codes: (...)}]
+    git_branch: str | None  # branch holding this run's checkpoints; None = no checkpoints
+    base_sha: str | None  # commit the run started from; the audit diffs against it
     errors: list[dict]  # tester: [{file, line, description}]
     problems: list[dict]  # reviewer: [{file, line, description, suggested_fix}]
     tests_passed: bool

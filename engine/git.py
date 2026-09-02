@@ -44,3 +44,26 @@ def checkpoint(repo: str, message: str) -> str | None:
     sha = _git(repo, "rev-parse", "--short", "HEAD")[1]
     print(f"[git] {sha} {message}", flush=True)
     return sha
+
+
+MAX_DIFF_CHARS = 20000
+
+
+def diff(repo: str, ref: str = "HEAD~1") -> str:
+    """What changed since `ref`, for the agents that judge the work.
+
+    Truncated head-first: the stat summary and the first hunks are what a reviewer
+    reads, and an unbounded diff would be pasted into every prompt after it.
+    """
+    code, out = _git(repo, "diff", "--stat", ref)
+    if code:
+        return ""
+    body = _git(repo, "diff", ref)[1]
+    if len(body) > MAX_DIFF_CHARS:
+        body = body[:MAX_DIFF_CHARS] + f"\n[... diff truncated at {MAX_DIFF_CHARS} chars ...]"
+    return f"{out}\n\n{body}".strip()
+
+
+def head(repo: str) -> str | None:
+    code, out = _git(repo, "rev-parse", "HEAD")
+    return None if code else out

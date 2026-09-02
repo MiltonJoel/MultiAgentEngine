@@ -106,7 +106,10 @@ def run_gate(cmd: list[str], repo: str, ok_codes: tuple[int, ...] = (0,)) -> lis
 
 def tester_node(state: GraphState) -> dict:
     repo = state["repo"]
-    errors = (run_gate(state["test_cmd"], repo, TEST_OK_CODES) + run_gate(state["lint_cmd"], repo))[:MAX_ERRORS]
+    errors = []
+    for gate in state["gates"]:
+        errors += run_gate(gate["cmd"], repo, tuple(gate.get("ok_codes") or (0,)))
+    errors = errors[:MAX_ERRORS]
     for error in errors:
         print(f"  {error['file']}:{error['line']} {error['description']}", flush=True)
     print(f"[tester] {len(errors)} error(s)", flush=True)
@@ -127,3 +130,19 @@ def tester_node(state: GraphState) -> dict:
 def parse_cmd(value: str | None, default: str) -> list[str]:
     """'' disables a gate entirely; None falls back to the default."""
     return shlex.split(default if value is None else value)
+
+
+def build_gates(gates: list[dict] | None, test_cmd: str | None, lint_cmd: str | None) -> list[dict]:
+    """A gate is {cmd, ok_codes}. The `gates` list in .mae.json is the general form —
+    any number of tools, in order; --test-cmd/--lint-cmd are the two-gate shortcut."""
+    if gates is not None:
+        out = []
+        for gate in gates:
+            if not isinstance(gate, dict) or "cmd" not in gate:
+                raise SystemExit(f"gates: each entry needs a 'cmd' key, got {gate!r}")
+            if gate["cmd"]:
+                out.append({"cmd": shlex.split(gate["cmd"]), "ok_codes": tuple(gate.get("ok_codes") or (0,))})
+        return out
+    pair = [{"cmd": parse_cmd(test_cmd, DEFAULT_TEST_CMD), "ok_codes": TEST_OK_CODES},
+            {"cmd": parse_cmd(lint_cmd, DEFAULT_LINT_CMD), "ok_codes": (0,)}]
+    return [gate for gate in pair if gate["cmd"]]

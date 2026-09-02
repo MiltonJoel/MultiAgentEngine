@@ -95,6 +95,7 @@ from any shell cwd, and you only pass them to point somewhere else.
 | `--allow-dir DIR` | extra directory the coder may read; repeatable |
 | `--test-cmd CMD` | test gate to run in the repo; `''` disables it |
 | `--lint-cmd CMD` | lint gate to run in the repo; `''` disables it |
+| `--agent ROLE=CLI` | bind a role to a CLI, e.g. `--agent reviewer=claude`; repeatable |
 | `--max-iterations N` | ceiling on coder passes (default 15) |
 | `--log-dir DIR` | where the JSONL run log goes (default `<plan dir>/runs`) |
 | `--no-git` | skip the per-run branch and the per-iteration commits |
@@ -147,8 +148,8 @@ This run: Fase 11 — Reintentos idempotentes
 status block *incrementally*, flipping each unit to `DONE` as its code lands. It
 does not run the tests; that is the tester's job. It is the only node that writes.
 
-**TESTER** (no LLM, free) — runs the project's own gates (by default
-`pytest -q --tb=line --no-header` and `ruff check . --output-format json`) and turns
+**TESTER** (no LLM, free) — runs the project's own gates in order (by default
+`pytest -q --tb=line --no-header` then `ruff check . --output-format json`) and turns
 their output into structured errors:
 
 ```json
@@ -169,7 +170,9 @@ It also **commits after every pass**, red ones included: each iteration becomes 
 rollback point and a readable diff.
 
 **REVIEWER** (`codex`, read-only) — runs **only on a red build**. Sees the spec,
-the queue and the errors; returns root causes as JSON via `--output-schema`:
+the queue, the errors **and the diff of the pass that just failed**, so it reads the
+change instead of guessing at the repo; returns root causes as JSON via
+`--output-schema`:
 
 ```json
 {"problems": [{"file": "...", "line": 84, "description": "why it fails",
@@ -177,8 +180,9 @@ the queue and the errors; returns root causes as JSON via `--output-schema`:
 ```
 
 **AUDITOR** (`codex`, read-only) — runs **once per run**, when the tests pass and
-the queue is closed. Checks the code against the spec, because the coder marked its
-own homework and passing tests do not prove the spec was delivered. It looks for
+the queue is closed. Sees the diff of the whole run (against the baseline commit) on
+top of the spec and the queue. Checks the code against the spec, because the coder
+marked its own homework and passing tests do not prove the spec was delivered. It looks for
 units marked `DONE` that are stubbed, contradict the spec, or have no test covering
 required behaviour. Its findings go back to the coder as `problems`.
 
@@ -188,6 +192,36 @@ adding one small item does not re-audit everything.
 `--max-iterations` (default 15) bounds every edge back to the coder. It is a
 ceiling, not a target — the loop exits as soon as nothing is open. It must exceed
 the number of units in the plan.
+
+Diffs are capped at 20 000 characters, `--stat` first, so a big pass can't flood the
+two prompts that follow it.
+
+---
+
+## Roles, CLIs and prompts
+
+The engine orchestrates *roles*; which CLI fills a role is configuration:
+
+```bash
+mae --agent reviewer=claude --agent auditor=claude    # one vendor for everything
+```
+
+```json
+{"agents": {"coder": "claude", "reviewer": "codex", "auditor": "codex"}}
+```
+
+Every runner takes the same arguments (`write`, `add_dirs`, `schema`, `timeout`), so
+adding a third CLI is one entry in `RUNNERS` in `engine/cli.py` and a function that
+shells out to it. Two caveats the engine tells you about instead of hiding:
+`codex` has no `--add-dir` (it warns if a role that needs one is bound to it), and
+`claude` has no output schema, so it is asked for JSON in the prompt instead — the
+parser already tolerates a chatty reply.
+
+The prompts are **files, not code**: `engine/prompts/{coder,reviewer,auditor}.md`.
+Drop `.mae/prompts/<role>.md` in the target repo to override one per project — the
+engine prints which file it used. Placeholders are `{}`-formatted; an unknown one
+fails at load with the list of what the node actually passes, and a literal brace
+must be doubled `{{ }}`.
 
 ---
 
@@ -222,14 +256,21 @@ Drop it in the target repo so daily use across projects isn't a wall of flags:
 
 ```json
 {
-  "test_cmd": "npm test -- --run",
-  "lint_cmd": "eslint . -f json",
+  "gates": [
+    {"cmd": "npm test -- --run", "ok_codes": [0]},
+    {"cmd": "tsc --noEmit"},
+    {"cmd": "eslint . -f json"}
+  ],
+  "agents": {"reviewer": "claude"},
   "max_iterations": 20,
   "allow_dirs": ["~/Desktop/FreqBot"]
 }
 ```
 
-CLI flags override it.
+`gates` is the general form — any number of tools, run in order, each with its own
+tolerated exit codes. `--test-cmd`/`--lint-cmd` are the two-gate shortcut and are
+refused if `gates` is present, rather than silently losing to it. CLI flags override
+everything else.
 
 ---
 
@@ -348,9 +389,11 @@ MultiAgentEngine/
 │   ├── main.py              entry point: CLI, validation, run lock, --archive
 │   ├── graph.py             LangGraph wiring, plan parsing, routing
 │   ├── state.py             GraphState
-│   ├── git.py               per-run branch, per-iteration checkpoints
+│   ├── git.py               per-run branch, checkpoints, diffs for the reviewers
+│   ├── prompts.py           prompt loading, with per-repo override
+│   ├── prompts/             the prompts themselves — editable without touching code
 │   ├── runlog.py            JSONL run log, cost and token totals
-│   ├── cli.py               claude/codex wrappers, limit handling, output parsing
+│   ├── cli.py               CLI runners (RUNNERS), limit handling, output parsing
 │   └── nodes/
 │       ├── coder.py         implementation agent
 │       ├── tester.py        deterministic, configurable test + lint gate
@@ -363,7 +406,8 @@ MultiAgentEngine/
 │   └── runs/                JSONL run logs (gitignored)
 └── tests/
     ├── test_engine.py       plan parsing, routing, output parsing
-    └── test_ops.py          checkpoints, run lock, per-repo config
+    ├── test_ops.py          checkpoints, run lock, per-repo config
+    └── test_modular.py      role→CLI binding, prompt override, gates, diffs
 ```
 
 Run the suite with:

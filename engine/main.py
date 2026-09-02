@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from engine import git, runlog
+from engine.cli import DEFAULT_AGENTS, RUNNERS
 from engine.graph import (
     MAX_ITERATIONS,
     archive_done,
@@ -16,7 +17,7 @@ from engine.graph import (
     plan_unlisted,
     plan_unparsed,
 )
-from engine.nodes.tester import DEFAULT_LINT_CMD, DEFAULT_TEST_CMD, parse_cmd
+from engine.nodes.tester import DEFAULT_LINT_CMD, DEFAULT_TEST_CMD, build_gates
 
 # Anchored to the project, not the shell's cwd, so the defaults hold from anywhere.
 WORKSPACE = Path(__file__).resolve().parent.parent / "workspace"
@@ -30,7 +31,11 @@ def _tally(plan: str) -> str:
 
 
 def _repo_config(repo: Path) -> dict:
-    """{test_cmd, lint_cmd, max_iterations, allow_dirs} from <repo>/.mae.json. CLI flags win."""
+    """{gates|test_cmd|lint_cmd, agents, max_iterations, allow_dirs} from <repo>/.mae.json.
+
+    CLI flags win. Unknown keys are left alone — a typo is the user's business, not
+    a reason to refuse to start.
+    """
     path = repo / REPO_CONFIG
     if not path.is_file():
         return {}
@@ -40,6 +45,22 @@ def _repo_config(repo: Path) -> dict:
         raise SystemExit(f"{path}: {exc}")
     print(f"Config: {path}")
     return config
+
+
+def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str]) -> dict[str, str]:
+    """Role -> CLI. Validated here so a typo fails now, not three hours into a run."""
+    agents = {**DEFAULT_AGENTS, **config}
+    for flag in flags:
+        role, _, cli = flag.partition("=")
+        if not cli:
+            parser.error(f"--agent expects ROLE=CLI, got {flag!r}")
+        agents[role.strip()] = cli.strip()
+    for role, cli in agents.items():
+        if role not in DEFAULT_AGENTS:
+            parser.error(f"unknown role {role!r} — known: {', '.join(DEFAULT_AGENTS)}")
+        if cli not in RUNNERS:
+            parser.error(f"unknown CLI {cli!r} for {role} — known: {', '.join(sorted(RUNNERS))}")
+    return agents
 
 
 @contextmanager
@@ -73,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Test gate, run in the repo. '' disables it. (default: {DEFAULT_TEST_CMD})")
     parser.add_argument("--lint-cmd", metavar="CMD",
                         help=f"Lint gate, run in the repo. '' disables it. (default: {DEFAULT_LINT_CMD})")
+    parser.add_argument("--agent", action="append", default=[], metavar="ROLE=CLI",
+                        help="Bind a role to a CLI, e.g. --agent reviewer=claude (repeatable). "
+                             f"Roles: {', '.join(DEFAULT_AGENTS)}. CLIs: {', '.join(sorted(RUNNERS))}. "
+                             f"(default: {', '.join(f'{r}={a}' for r, a in DEFAULT_AGENTS.items())})")
     parser.add_argument("--max-iterations", type=int, metavar="N",
                         help=f"Ceiling on coder passes; must exceed the number of open units. "
                              f"(default: {MAX_ITERATIONS})")
@@ -107,10 +132,16 @@ def main():
         return
 
     config = _repo_config(repo)
-    test_cmd = parse_cmd(args.test_cmd if args.test_cmd is not None else config.get("test_cmd"),
-                         DEFAULT_TEST_CMD)
-    lint_cmd = parse_cmd(args.lint_cmd if args.lint_cmd is not None else config.get("lint_cmd"),
-                         DEFAULT_LINT_CMD)
+    if config.get("gates") is not None and (args.test_cmd is not None or args.lint_cmd is not None):
+        parser.error("--test-cmd/--lint-cmd conflict with the 'gates' list in .mae.json; "
+                     "edit the list, or drop it and use the flags")
+    try:
+        gates = build_gates(config.get("gates"),
+                            args.test_cmd if args.test_cmd is not None else config.get("test_cmd"),
+                            args.lint_cmd if args.lint_cmd is not None else config.get("lint_cmd"))
+    except SystemExit as exc:
+        parser.error(str(exc))
+    agents = _agents(parser, config.get("agents", {}), args.agent)
     max_iterations = args.max_iterations or config.get("max_iterations") or MAX_ITERATIONS
     allow_dirs = []
     for raw in [*args.allow_dir, *config.get("allow_dirs", [])]:
@@ -133,18 +164,21 @@ def main():
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED{hint}")
 
     with _plan_lock(plan):
-        run(spec, plan, repo, allow_dirs, test_cmd, lint_cmd, max_iterations, args.log_dir, args.no_git)
+        run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
 
 
-def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], test_cmd: list[str],
-        lint_cmd: list[str], max_iterations: int, log_dir: str | None, no_git: bool):
+def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
+        gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool):
     log_path = runlog.start(log_dir or plan.parent / "runs")
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
     print("This run: " + (", ".join(focus) if focus else "audit only"))
     print(f"Log: {log_path}")
 
-    branch = None
+    print("Agents: " + ", ".join(f"{role}={cli}" for role, cli in agents.items()))
+    print("Gates: " + (" ; ".join(" ".join(g["cmd"]) for g in gates) or "(none — nothing gates the coder)"))
+
+    branch = base_sha = None
     if no_git:
         print("[git] checkpoints disabled (--no-git)")
     elif git.is_repo(str(repo)):
@@ -153,11 +187,13 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], test_cmd: lis
             # commit whatever was already dirty on its own, so every later checkpoint
             # is the coder's work alone and `git diff HEAD~1` means what it says
             git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run")
+            base_sha = git.head(str(repo))  # the audit diffs the whole run against this
     else:
         print(f"[git] {repo} is not a git repository — running without checkpoints or rollback")
 
     runlog.log("start", repo=str(repo), plan=str(plan), spec=str(spec), branch=branch,
-               focus=focus, test_cmd=test_cmd, lint_cmd=lint_cmd, max_iterations=max_iterations)
+               base_sha=base_sha, focus=focus, agents=agents, max_iterations=max_iterations,
+               gates=[" ".join(g["cmd"]) for g in gates])
 
     app = build_graph()
     try:
@@ -166,9 +202,10 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], test_cmd: lis
             "plan": str(plan),
             "repo": str(repo),
             "allow_dirs": allow_dirs,
-            "test_cmd": test_cmd,
-            "lint_cmd": lint_cmd,
+            "agents": agents,
+            "gates": gates,
             "git_branch": branch,
+            "base_sha": base_sha,
             "errors": [],
             "problems": [],
             "tests_passed": False,

@@ -180,15 +180,18 @@ def _claude_usage(lines: list[str]) -> dict:
     return {}
 
 
-def run_claude(prompt: str, cwd: str, permission_mode: str = "plan", label: str = "claude",
-               timeout: float = 600, add_dirs: list[str] | None = None) -> str:
-    """permission_mode='plan' = read-only. 'acceptEdits' = can write files (coder).
-    add_dirs = extra directories the tools may touch, for anything outside cwd —
+def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 600,
+               add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+    """add_dirs = extra directories the tools may touch, for anything outside cwd —
     the plan file, plus any codebase the plan tells the agent to read."""
-    cmd = ["claude", "-p", "--permission-mode", permission_mode,
+    cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
+    if schema:
+        # claude has no --output-schema; asking is the best it can do, and the
+        # callers already tolerate a chatty or fenced reply.
+        prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
     with runlog.Timer() as elapsed:
         lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress)
     runlog.log("agent", label=label, agent="claude", seconds=elapsed.seconds,
@@ -196,13 +199,15 @@ def run_claude(prompt: str, cwd: str, permission_mode: str = "plan", label: str 
     return _claude_result(lines)
 
 
-def run_codex(prompt: str, cwd: str, sandbox: str = "read-only", label: str = "codex",
-              timeout: float = 1200, schema: dict | None = None) -> str:
-    """sandbox='read-only' = can't edit files (reviewer). 'workspace-write' = can.
-    schema = JSON Schema the final response must conform to."""
+def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1200,
+              add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+    """schema = JSON Schema the final response must conform to, enforced by codex."""
+    if add_dirs:
+        print(f"[{label}] codex has no --add-dir: {', '.join(add_dirs)} will not be readable", flush=True)
     fd, last_message = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
-    cmd = ["codex", "exec", "-C", cwd, "-s", sandbox, "--skip-git-repo-check", "-o", last_message]
+    cmd = ["codex", "exec", "-C", cwd, "-s", "workspace-write" if write else "read-only",
+           "--skip-git-repo-check", "-o", last_message]
     schema_file = None
     if schema:
         fd, schema_file = tempfile.mkstemp(suffix=".json")
@@ -219,3 +224,19 @@ def run_codex(prompt: str, cwd: str, sandbox: str = "read-only", label: str = "c
         os.unlink(last_message)
         if schema_file:
             os.unlink(schema_file)
+
+
+# Which CLI plays which role is configuration, not code: every runner takes the same
+# arguments, so any of them can be pointed at any role from .mae.json or --agent.
+RUNNERS = {"claude": run_claude, "codex": run_codex}
+DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
+
+
+def run_agent(agent: str, prompt: str, cwd: str, label: str, **kwargs) -> str:
+    """Dispatch to the CLI bound to this role. Unknown name = a typo in the config,
+    and finding out three hours into a run is not the time."""
+    try:
+        runner = RUNNERS[agent]
+    except KeyError:
+        raise SystemExit(f"unknown agent {agent!r} for {label} — known: {', '.join(sorted(RUNNERS))}")
+    return runner(prompt, cwd, label=label, **kwargs)

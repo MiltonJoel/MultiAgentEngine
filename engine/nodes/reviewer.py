@@ -1,13 +1,16 @@
-"""Two codex passes sharing one output shape:
+"""Two agent passes sharing one output shape:
 
-- reviewer: runs on a red build, sees only the tester's errors, returns root causes.
+- reviewer: runs on a red build, sees the errors and the failing pass's diff.
 - auditor:  runs once on a green build, checks the code against the plan's DONE claims.
+
+Both prompts live in engine/prompts/, and which CLI runs them is configuration.
 """
 import json
 import re
 from pathlib import Path
 
-from engine.cli import run_codex
+from engine import git, prompts
+from engine.cli import run_agent
 from engine.state import GraphState
 
 SCHEMA = {
@@ -31,24 +34,7 @@ SCHEMA = {
     "required": ["problems"],
     "additionalProperties": False,
 }
-
-PROMPT = """You are the failure analyst in an automated coding loop. You do not fix anything.
-
-The architecture spec the code must satisfy:
-
-{spec}
-
-The current work queue:
-
-{plan}
-
-The deterministic test run failed with these errors:
-{errors}
-
-Read only the code the errors point at, then diagnose the root cause of each.
-Merge errors that share one root cause into a single problem. For each problem:
-- description: why it actually fails, not a restatement of the error text.
-- suggested_fix: the concrete change to make, precise enough to apply without guessing."""
+NO_DIFF = "(not available — the repository is not under git, or nothing was committed)"
 
 
 def _parse_problems(raw: str) -> list[dict]:
@@ -63,47 +49,11 @@ def _parse_problems(raw: str) -> list[dict]:
     return [{"file": "", "line": 0, "description": raw.strip()[:800], "suggested_fix": ""}]
 
 
-AUDIT_PROMPT = """You are the auditor in an automated coding loop. You do not fix anything.
-
-The test suite passes and the implementation agent has marked its own work DONE.
-Your job is to check whether those claims are true. The agent marked itself — the
-tests are the only objective evidence so far, and passing tests do not prove the
-plan was delivered.
-
-The architecture spec the code must satisfy:
-
-{spec}
-
-The work queue, with the agent's status block at the top:
-
-{plan}
-
-{focus}
-
-Read the actual code in the repository and, for every unit in scope, judge
-whether the code genuinely delivers what that part of the plan specifies.
-
-Report a problem for each of:
-- a unit marked DONE whose code is missing, stubbed, or a placeholder;
-- a unit marked DONE that is implemented but contradicts what the plan specifies;
-- behaviour the plan explicitly requires that no test covers, where a bug would
-  therefore pass silently.
-
-Be specific: point at real files and lines. `suggested_fix` must say what to
-change, precise enough to apply without guessing. Do not report style opinions,
-refactors, or improvements the plan never asked for. If a unit genuinely delivers
-what the plan asked, say nothing about it — an empty problems list is the correct
-answer for an honest implementation."""
-
-
-def reviewer_node(state: GraphState) -> dict:
-    prompt = PROMPT.format(
-        spec=Path(state["spec"]).read_text(),
-        plan=Path(state["plan"]).read_text(),
-        errors=json.dumps(state["errors"], indent=2),
-    )
-    raw = run_codex(prompt, cwd=state["repo"], label="reviewer", schema=SCHEMA)
-    return {"problems": _parse_problems(raw)}
+def _diff(state: GraphState, ref: str | None) -> str:
+    """The change under review. Without it both passes re-read the whole repo blind."""
+    if not state.get("git_branch") or not ref:
+        return NO_DIFF
+    return git.diff(state["repo"], ref) or NO_DIFF
 
 
 def _focus(state: GraphState) -> str:
@@ -120,13 +70,27 @@ def _focus(state: GraphState) -> str:
     )
 
 
+def reviewer_node(state: GraphState) -> dict:
+    prompt = prompts.load(
+        "reviewer", state["repo"],
+        spec=Path(state["spec"]).read_text(),
+        plan=Path(state["plan"]).read_text(),
+        errors=json.dumps(state["errors"], indent=2),
+        diff=_diff(state, "HEAD~1"),  # the pass that just failed
+    )
+    raw = run_agent(state["agents"]["reviewer"], prompt, cwd=state["repo"], label="reviewer", schema=SCHEMA)
+    return {"problems": _parse_problems(raw)}
+
+
 def auditor_node(state: GraphState) -> dict:
-    prompt = AUDIT_PROMPT.format(
+    prompt = prompts.load(
+        "auditor", state["repo"],
         spec=Path(state["spec"]).read_text(),
         plan=Path(state["plan"]).read_text(),
         focus=_focus(state),
+        diff=_diff(state, state.get("base_sha")),  # everything this run changed
     )
-    raw = run_codex(prompt, cwd=state["repo"], label="auditor", schema=SCHEMA)
+    raw = run_agent(state["agents"]["auditor"], prompt, cwd=state["repo"], label="auditor", schema=SCHEMA)
     problems = _parse_problems(raw)
     print(f"[auditor] {len(problems)} problem(s) against the plan", flush=True)
     return {"problems": problems, "audited": True}
