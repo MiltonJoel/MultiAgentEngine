@@ -19,10 +19,20 @@ from engine.graph import (
 )
 from engine.nodes.tester import DEFAULT_LINT_CMD, DEFAULT_TEST_CMD, build_gates
 
-# Anchored to the project, not the shell's cwd, so the defaults hold from anywhere.
-WORKSPACE = Path(__file__).resolve().parent.parent / "workspace"
-# Per-repo settings, so daily use across projects doesn't mean retyping flags.
-REPO_CONFIG = ".mae.json"
+# Everything project-specific lives in the target repo, never in this package:
+# <repo>/.mae/{config.json, spec.md, plan.md, prompts/*.md, runs/}. The engine ships
+# no documents of its own, so it drives any repo without being edited.
+MAE_DIR = ".mae"
+REPO_CONFIG = [f"{MAE_DIR}/config.json", ".mae.json"]  # second form kept: older repos use it
+DEFAULT_SPEC = "spec.md"
+DEFAULT_PLAN = "plan.md"
+
+NEW_PLAN = """<!-- ENGINE-STATUS
+First unit: TODO
+-->
+
+# Work queue — describe anything that needs more than one line below.
+"""
 
 
 def _tally(plan: str) -> str:
@@ -31,20 +41,37 @@ def _tally(plan: str) -> str:
 
 
 def _repo_config(repo: Path) -> dict:
-    """{gates|test_cmd|lint_cmd, agents, max_iterations, allow_dirs} from <repo>/.mae.json.
+    """{spec, plan, gates|test_cmd|lint_cmd, agents, max_iterations, allow_dirs} from
+    <repo>/.mae/config.json.
 
     CLI flags win. Unknown keys are left alone — a typo is the user's business, not
     a reason to refuse to start.
     """
-    path = repo / REPO_CONFIG
+    for name in REPO_CONFIG:
+        path = repo / name
+        if path.is_file():
+            try:
+                config = json.loads(path.read_text())
+            except ValueError as exc:
+                raise SystemExit(f"{path}: {exc}")
+            print(f"Config: {path}")
+            return config
+    return {}
+
+
+def _doc(parser: argparse.ArgumentParser, flag: str | None, configured: str | None,
+         repo: Path, default: str, what: str) -> Path:
+    """Locate a per-project document: --flag (relative to the shell) beats the config
+    key (relative to the repo) beats <repo>/.mae/<default>. No path into this package."""
+    if flag:
+        path = Path(flag).expanduser().resolve()
+    else:
+        path = (repo / Path(configured or f"{MAE_DIR}/{default}").expanduser()).resolve()
     if not path.is_file():
-        return {}
-    try:
-        config = json.loads(path.read_text())
-    except ValueError as exc:
-        raise SystemExit(f"{path}: {exc}")
-    print(f"Config: {path}")
-    return config
+        parser.error(f"{what} file not found: {path}\n"
+                     f"Put the {what} there, point --{what} at it, or set \"{what}\" in "
+                     f"{repo / REPO_CONFIG[0]}." + (f"\nA plan starts as:\n\n{NEW_PLAN}" if what == "plan" else ""))
+    return path
 
 
 def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str]) -> dict[str, str]:
@@ -77,19 +104,19 @@ def _plan_lock(plan: Path):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mae", description="AI software engineering loop")
-    parser.add_argument("--spec", default=str(WORKSPACE / "arquitectura.md"), metavar="FILE",
+    parser.add_argument("--spec", metavar="FILE",
                         help="Architecture doc: the frozen invariant. Never edited by the engine. "
-                             "(default: %(default)s)")
-    parser.add_argument("--plan", default=str(WORKSPACE / "trabajo.txt"), metavar="FILE",
+                             f"(default: <repo>/{MAE_DIR}/{DEFAULT_SPEC})")
+    parser.add_argument("--plan", metavar="FILE",
                         help="Work queue: holds the ENGINE-STATUS block and the open items. "
-                             "(default: %(default)s)")
+                             f"(default: <repo>/{MAE_DIR}/{DEFAULT_PLAN})")
     parser.add_argument("--repo", default=".", help="Path to the target repository")
     parser.add_argument("--archive", action="store_true",
                         help="Move DONE lines out of the status block into <plan>.archive and exit. "
                              "Deterministic, no agent runs; keeps the plan small as changes pile up.")
     parser.add_argument("--allow-dir", action="append", default=[], metavar="DIR",
                         help="Extra directory the coder may read (repeatable). Use it for any "
-                             "codebase the plan references, e.g. --allow-dir ~/Desktop/FreqBot")
+                             "codebase the plan references, e.g. --allow-dir ../reference-repo")
     parser.add_argument("--test-cmd", metavar="CMD",
                         help=f"Test gate, run in the repo. '' disables it. (default: {DEFAULT_TEST_CMD})")
     parser.add_argument("--lint-cmd", metavar="CMD",
@@ -102,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Ceiling on coder passes; must exceed the number of open units. "
                              f"(default: {MAX_ITERATIONS})")
     parser.add_argument("--log-dir", metavar="DIR",
-                        help="Where the JSONL run log goes (default: <plan dir>/runs)")
+                        help=f"Where the JSONL run log goes (default: <repo>/{MAE_DIR}/runs)")
     parser.add_argument("--no-git", action="store_true",
                         help="Skip the per-run branch and the per-iteration commits in the target repo. "
                              "You lose every rollback point — only for a repo you are not protecting.")
@@ -113,17 +140,14 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    plan = Path(args.plan).expanduser().resolve()
-    if not plan.is_file():
-        parser.error(f"plan file not found: {plan}")
-    spec = Path(args.spec).expanduser().resolve()
-    if not spec.is_file():
-        parser.error(f"spec file not found: {spec}")
-    if spec == plan:
-        parser.error("--spec and --plan must be different files")
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
         parser.error(f"--repo is not a directory: {repo}")
+    config = _repo_config(repo)
+    spec = _doc(parser, args.spec, config.get("spec"), repo, DEFAULT_SPEC, "spec")
+    plan = _doc(parser, args.plan, config.get("plan"), repo, DEFAULT_PLAN, "plan")
+    if spec == plan:
+        parser.error("--spec and --plan must be different files")
 
     if args.archive:
         archive = plan.with_suffix(plan.suffix + ".archive")
@@ -131,9 +155,8 @@ def main():
         print(f"Archived {moved} DONE line(s) to {archive}; {kept} left in the block.")
         return
 
-    config = _repo_config(repo)
     if config.get("gates") is not None and (args.test_cmd is not None or args.lint_cmd is not None):
-        parser.error("--test-cmd/--lint-cmd conflict with the 'gates' list in .mae.json; "
+        parser.error("--test-cmd/--lint-cmd conflict with the 'gates' list in the repo config; "
                      "edit the list, or drop it and use the flags")
     try:
         gates = build_gates(config.get("gates"),
@@ -169,7 +192,7 @@ def main():
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
         gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool):
-    log_path = runlog.start(log_dir or plan.parent / "runs")
+    log_path = runlog.start(log_dir or repo / MAE_DIR / "runs")
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
     print("This run: " + (", ".join(focus) if focus else "audit only"))

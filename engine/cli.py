@@ -227,7 +227,7 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
 
 
 # Which CLI plays which role is configuration, not code: every runner takes the same
-# arguments, so any of them can be pointed at any role from .mae.json or --agent.
+# arguments, so any of them can be pointed at any role from the repo config or --agent.
 RUNNERS = {"claude": run_claude, "codex": run_codex}
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
 

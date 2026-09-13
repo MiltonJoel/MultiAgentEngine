@@ -1,4 +1,4 @@
-"""The three seams: which CLI runs a role, where prompts come from, what gates the coder."""
+"""The seams: which CLI runs a role, where prompts and documents come from, what gates the coder."""
 import subprocess
 import tempfile
 from pathlib import Path
@@ -7,7 +7,15 @@ import pytest
 
 from engine import git, prompts
 from engine.cli import DEFAULT_AGENTS, RUNNERS, run_agent
-from engine.main import _agents, build_parser
+from engine.main import (
+    DEFAULT_PLAN,
+    DEFAULT_SPEC,
+    MAE_DIR,
+    _agents,
+    _doc,
+    _repo_config,
+    build_parser,
+)
 from engine.nodes.reviewer import NO_DIFF, _diff
 from engine.nodes.tester import DEFAULT_TEST_CMD, build_gates
 
@@ -118,3 +126,40 @@ def test_long_diffs_are_truncated_before_they_reach_a_prompt():
         body = git.diff(str(repo))
         assert len(body) < git.MAX_DIFF_CHARS + 200
         assert "truncated" in body
+
+
+def test_documents_live_in_the_target_repo_not_in_the_package():
+    """The fourth seam: spec and plan are per-project files the engine only locates.
+    Nothing under engine/ is a default path, so the same install drives any repo."""
+    parser = build_parser()
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        # no documents anywhere: that is an error naming the repo, not a silent fallback
+        with pytest.raises(SystemExit):
+            _doc(parser, None, None, repo, DEFAULT_PLAN, "plan")
+
+        default = repo / MAE_DIR / DEFAULT_SPEC
+        default.parent.mkdir()
+        default.write_text("arch")
+        assert _doc(parser, None, None, repo, DEFAULT_SPEC, "spec") == default
+
+        # a config key moves it, resolved against the repo
+        (repo / "docs").mkdir()
+        (repo / "docs" / "arch.md").write_text("arch")
+        assert _doc(parser, None, "docs/arch.md", repo, DEFAULT_SPEC, "spec") == repo / "docs" / "arch.md"
+
+        # and the flag wins over both
+        elsewhere = repo / "elsewhere.md"
+        elsewhere.write_text("arch")
+        assert _doc(parser, str(elsewhere), "docs/arch.md", repo, DEFAULT_SPEC, "spec") == elsewhere
+
+
+def test_repo_config_is_found_in_either_place():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        assert _repo_config(repo) == {}
+        (repo / ".mae.json").write_text('{"max_iterations": 3}')  # the older location
+        assert _repo_config(repo) == {"max_iterations": 3}
+        (repo / MAE_DIR).mkdir()
+        (repo / MAE_DIR / "config.json").write_text('{"max_iterations": 9}')
+        assert _repo_config(repo) == {"max_iterations": 9}  # the current one wins

@@ -32,7 +32,21 @@ pip install -e .     # or: pipx install -e .  → `mae` on PATH, runnable from a
 
 ## The two files you own
 
-The engine deliberately splits what changes from what does not.
+They live **in the target repo**, not in this one: `<repo>/.mae/spec.md` and
+`<repo>/.mae/plan.md`. The engine ships no documents of its own, so one install
+drives any number of projects and never has to be edited to point at a new one.
+
+```
+<repo>/.mae/
+├── spec.md        --spec (default)
+├── plan.md        --plan (default)
+├── config.json    per-repo settings (optional)
+├── prompts/       per-repo prompt overrides (optional)
+└── runs/          JSONL run logs (gitignore this one)
+```
+
+Anywhere else works too — `--spec`/`--plan`, or the `spec`/`plan` keys in
+`config.json`. The engine deliberately splits what changes from what does not.
 
 ### `--spec` — the architecture (frozen)
 
@@ -80,24 +94,24 @@ Rules that matter:
 ## Running it
 
 ```bash
-mae --repo ~/Desktop/BOT-ARG        # or: python3 -m engine.main --repo ...
+mae --repo ~/code/myproject         # or: python3 -m engine.main --repo ...
 ```
 
-`--spec` and `--plan` default to `workspace/arquitectura.md` and
-`workspace/trabajo.txt`, resolved from the project directory — so the command works
-from any shell cwd, and you only pass them to point somewhere else.
+`--spec` and `--plan` default to `<repo>/.mae/spec.md` and `<repo>/.mae/plan.md`,
+so the command above is the whole invocation once those two files exist. If they are
+missing the engine says exactly which path it looked at and prints a starter block.
 
 | Flag | Meaning |
 |---|---|
-| `--spec FILE` | architecture doc (default: `workspace/arquitectura.md`) |
-| `--plan FILE` | work queue with the status block (default: `workspace/trabajo.txt`) |
+| `--spec FILE` | architecture doc (default: `<repo>/.mae/spec.md`) |
+| `--plan FILE` | work queue with the status block (default: `<repo>/.mae/plan.md`) |
 | `--repo DIR` | the repository being built (default `.`) |
 | `--allow-dir DIR` | extra directory the coder may read; repeatable |
 | `--test-cmd CMD` | test gate to run in the repo; `''` disables it |
 | `--lint-cmd CMD` | lint gate to run in the repo; `''` disables it |
 | `--agent ROLE=CLI` | bind a role to a CLI, e.g. `--agent reviewer=claude`; repeatable |
 | `--max-iterations N` | ceiling on coder passes (default 15) |
-| `--log-dir DIR` | where the JSONL run log goes (default `<plan dir>/runs`) |
+| `--log-dir DIR` | where the JSONL run log goes (default `<repo>/.mae/runs`) |
 | `--no-git` | skip the per-run branch and the per-iteration commits |
 | `--archive` | compact the status block and exit; no agent runs |
 
@@ -109,7 +123,7 @@ working directory and **cannot read or write outside it** otherwise. Point it at
 any codebase your spec tells the agent to consult:
 
 ```bash
-mae --repo ~/Desktop/BOT-ARG --allow-dir ~/Desktop/FreqBot
+mae --repo ~/code/myproject --allow-dir ~/code/reference-lib
 ```
 
 The spec's and plan's own directories are added automatically.
@@ -161,7 +175,7 @@ so a repo without tests doesn't loop forever. A missing tool is skipped, not fai
 
 The **commands are configuration, not code**, so the same engine drives a Python, a
 JS or a Go repo: `--test-cmd "npm test"`, `--lint-cmd "eslint . -f json"`, or a
-`.mae.json` in the target repo (below). Parsing tries, in order, ruff/eslint JSON,
+`.mae/config.json` in the target repo (below). Parsing tries, in order, ruff/eslint JSON,
 then `path:line[:col]: message` — which covers pytest `--tb=line`, ruff, mypy, tsc,
 eslint compact, `go vet` and gcc — then falls back to the last 800 characters of raw
 output. An unrecognised tool degrades to a blunt error; it never breaks the loop.
@@ -250,12 +264,14 @@ If the target isn't a git repo the run still works, unprotected, and says so.
 
 ---
 
-## Per-repo settings — `.mae.json`
+## Per-repo settings — `.mae/config.json`
 
 Drop it in the target repo so daily use across projects isn't a wall of flags:
 
 ```json
 {
+  "spec": "docs/architecture.md",
+  "plan": "docs/queue.md",
   "gates": [
     {"cmd": "npm test -- --run", "ok_codes": [0]},
     {"cmd": "tsc --noEmit"},
@@ -263,9 +279,13 @@ Drop it in the target repo so daily use across projects isn't a wall of flags:
   ],
   "agents": {"reviewer": "claude"},
   "max_iterations": 20,
-  "allow_dirs": ["~/Desktop/FreqBot"]
+  "allow_dirs": ["~/code/reference-lib"]
 }
 ```
+
+`spec` and `plan` are optional and resolved against the repo — set them only to move
+the documents out of `.mae/`. (`.mae.json` at the repo root is still read, for repos
+set up before the directory existed.)
 
 `gates` is the general form — any number of tools, run in order, each with its own
 tolerated exit codes. `--test-cmd`/`--lint-cmd` are the two-gate shortcut and are
@@ -276,13 +296,13 @@ everything else.
 
 ## The run log
 
-Every run appends one JSONL file under `<plan dir>/runs/`, so a 90-minute night
+Every run appends one JSONL file under `<repo>/.mae/runs/`, so a 90-minute night
 run leaves something behind besides scrollback:
 
 ```bash
-tail -f workspace/runs/20260901-193914.jsonl               # live
-jq -r 'select(.event=="agent") | "\(.label) \(.seconds)s $\(.cost_usd)"' workspace/runs/*.jsonl
-jq 'select(.event=="finish") | .usage' workspace/runs/*.jsonl
+tail -f <repo>/.mae/runs/20260901-193914.jsonl               # live
+jq -r 'select(.event=="agent") | "\(.label) \(.seconds)s $\(.cost_usd)"' <repo>/.mae/runs/*.jsonl
+jq 'select(.event=="finish") | .usage' <repo>/.mae/runs/*.jsonl
 ```
 
 Events: `start`, `agent` (per CLI call: seconds, tokens, cost), `gate` (errors
@@ -321,7 +341,7 @@ work file) and add its line. Match the names so the agent can find the detail.
 mae --archive
 ```
 
-Moves `DONE` lines into `workspace/trabajo.txt.archive` with a timestamp. Deterministic, no
+Moves `DONE` lines into `<plan>.archive` (so `.mae/plan.md.archive`) with a timestamp. Deterministic, no
 agent, no cost. Nothing is lost: moved lines are appended verbatim, and lines the
 parser doesn't understand stay put. If everything was archived it leaves one
 summary line behind — an empty block would read as "never started" and make the
@@ -398,16 +418,23 @@ MultiAgentEngine/
 │       ├── coder.py         implementation agent
 │       ├── tester.py        deterministic, configurable test + lint gate
 │       └── reviewer.py      failure analyst **and** auditor (shared schema)
-├── workspace/               your documents — the only files you edit
-│   ├── arquitectura.md      --spec  (default)
-│   ├── trabajo.txt          --plan  (default)
-│   ├── trabajo.txt.archive  written by --archive, never read by a model
-│   ├── legacy/              pre-split originals, safe to delete
-│   └── runs/                JSONL run logs (gitignored)
 └── tests/
     ├── test_engine.py       plan parsing, routing, output parsing
     ├── test_ops.py          checkpoints, run lock, per-repo config
-    └── test_modular.py      role→CLI binding, prompt override, gates, diffs
+    └── test_modular.py      the seams: role→CLI, prompts, documents, gates, diffs
+```
+
+Nothing here is project-specific. Everything you write lives in the repo being
+built:
+
+```
+<your repo>/.mae/
+├── spec.md          --spec
+├── plan.md          --plan
+├── plan.md.archive  written by --archive, never read by a model
+├── config.json      per-repo settings (optional)
+├── prompts/         per-repo prompt overrides (optional)
+└── runs/            JSONL run logs — gitignore this one
 ```
 
 Run the suite with:
@@ -458,9 +485,9 @@ so the engine cannot see them. Add a line inside <!-- ENGINE-STATUS ... --> for 
 
 ## Suggested hygiene
 
-Keep `workspace/` under git — it is committed with the engine. The status block is
-the only state that survives between runs; if an agent ever mangles it, `git diff`
-shows you in a second.
+Commit `<repo>/.mae/` with the project it belongs to, and gitignore `.mae/runs/`.
+The status block is the only state that survives between runs; if an agent ever
+mangles it, `git diff` shows you in a second.
 
 Delete stale `engine/*` branches in the target repo once you have merged or
 discarded them: `git -C <repo> branch -D $(git -C <repo> branch --list 'engine/*')`.

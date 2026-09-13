@@ -4,4 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
-runs/
+# run logs: <repo>/.mae/runs/
+.mae/runs/
+# local scratch — project docs belong in the target repo's .mae/, not in the engine
+workspace/

@@ -6,7 +6,7 @@ output: one {file, line, description} per failure instead of a full traceback th
 would be pasted into every prompt after it.
 
 The commands are configuration, not code — `--test-cmd` / `--lint-cmd`, or a
-`.mae.json` in the target repo — so the same engine drives a Python, a JS or a Go
+`.mae/config.json` in the target repo — so the same engine drives a Python, a JS or a Go
 repo. Only the parsing is built in, and it falls back to the raw tail whenever it
 does not recognise the output, so an unknown tool degrades instead of failing.
 """
@@ -133,7 +133,7 @@ def parse_cmd(value: str | None, default: str) -> list[str]:
 
 
 def build_gates(gates: list[dict] | None, test_cmd: str | None, lint_cmd: str | None) -> list[dict]:
-    """A gate is {cmd, ok_codes}. The `gates` list in .mae.json is the general form —
+    """A gate is {cmd, ok_codes}. The `gates` list in the repo config is the general form —
     any number of tools, in order; --test-cmd/--lint-cmd are the two-gate shortcut."""
     if gates is not None:
         out = []
