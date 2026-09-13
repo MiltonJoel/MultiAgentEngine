@@ -1,10 +1,4 @@
-"""Two agent passes sharing one output shape:
-
-- reviewer: runs on a red build, sees the errors and the failing pass's diff.
-- auditor:  runs once on a green build, checks the code against the plan's DONE claims.
-
-Both prompts live in engine/prompts/, and which CLI runs them is configuration.
-"""
+"""Two read-only passes with one output shape: reviewer (red build) and auditor (once, on green)."""
 import json
 import re
 from pathlib import Path
@@ -38,8 +32,7 @@ NO_DIFF = "(not available — the repository is not under git, or nothing was co
 
 
 def _parse_problems(raw: str) -> list[dict]:
-    """The output schema should guarantee clean JSON; a fenced or chatty reply
-    must still not crash the loop."""
+    """JSON out of a possibly fenced or chatty reply; a garbage reply becomes one problem, not a crash."""
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if match:
         try:
@@ -50,15 +43,13 @@ def _parse_problems(raw: str) -> list[dict]:
 
 
 def _diff(state: GraphState, ref: str | None) -> str:
-    """The change under review. Without it both passes re-read the whole repo blind."""
     if not state.get("git_branch") or not ref:
         return NO_DIFF
     return git.diff(state["repo"], ref) or NO_DIFF
 
 
 def _focus(state: GraphState) -> str:
-    """Scope the audit to what this run actually worked on. Re-auditing units that
-    were already DONE before the run started costs a lot and finds nothing new."""
+    """Scope the audit to the units open when the run started."""
     names = state.get("focus") or []
     if not names:
         return "SCOPE: every unit in the status block — nothing was open when this run started."

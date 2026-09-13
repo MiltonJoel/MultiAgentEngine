@@ -17,8 +17,8 @@ otherwise.
    parses. Everything outside it is the user's — do not rewrite or reorder it.
 
    <!-- ENGINE-STATUS
-   Fase 1 — Event Bus: DONE
-   Fase 2 — InstrumentRegistry: IN_PROGRESS
+   Login flow: DONE
+   Password reset: IN_PROGRESS
    -->
 
    Update it **incrementally**: flip a unit to DONE as soon as its code is

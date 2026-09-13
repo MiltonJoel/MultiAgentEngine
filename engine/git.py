@@ -1,12 +1,9 @@
 """Checkpoints in the target repo: one branch per run, one commit per iteration.
-
-The coder writes with acceptEdits for hours. Without a commit after every pass
-there is no rollback point and no diff to read afterwards — iteration 7 breaking
-what iteration 3 got right is unrecoverable. Everything here degrades to a no-op
-when the target isn't a git repo, so a non-git repo still runs, just unprotected.
-"""
+Everything degrades to a no-op when the target isn't a git repo."""
 import subprocess
 from datetime import datetime, timezone
+
+MAX_DIFF_CHARS = 20000
 
 
 def _git(repo: str, *args: str) -> tuple[int, str]:
@@ -18,13 +15,9 @@ def is_repo(repo: str) -> bool:
     return _git(repo, "rev-parse", "--git-dir")[0] == 0
 
 
-def start_branch(repo: str, prefix: str = "engine") -> str | None:
-    """Branch off the current HEAD so the run is isolated and reviewable as a whole.
-
-    `checkout -b` keeps the working tree, so uncommitted work is carried over and
-    captured by the first checkpoint instead of being discarded.
-    """
-    branch = f"{prefix}/{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S')}"
+def start_branch(repo: str) -> str | None:
+    """`checkout -b engine/<stamp>`; keeps the working tree so uncommitted work carries over."""
+    branch = f"engine/{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S')}"
     code, out = _git(repo, "checkout", "-b", branch)
     if code:
         print(f"[git] could not create {branch}: {out}", flush=True)
@@ -34,7 +27,7 @@ def start_branch(repo: str, prefix: str = "engine") -> str | None:
 
 
 def checkpoint(repo: str, message: str) -> str | None:
-    """Commit whatever the coder just did. None if there was nothing to commit."""
+    """Commit everything; None if there was nothing to commit."""
     _git(repo, "add", "-A")
     code, out = _git(repo, "commit", "-m", message)
     if code:
@@ -46,15 +39,8 @@ def checkpoint(repo: str, message: str) -> str | None:
     return sha
 
 
-MAX_DIFF_CHARS = 20000
-
-
 def diff(repo: str, ref: str = "HEAD~1") -> str:
-    """What changed since `ref`, for the agents that judge the work.
-
-    Truncated head-first: the stat summary and the first hunks are what a reviewer
-    reads, and an unbounded diff would be pasted into every prompt after it.
-    """
+    """Stat plus body since `ref`, truncated head-first so it can't flood a prompt."""
     code, out = _git(repo, "diff", "--stat", ref)
     if code:
         return ""

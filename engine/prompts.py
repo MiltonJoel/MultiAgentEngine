@@ -1,9 +1,4 @@
-"""Prompts live in files, not in Python.
-
-Tuning a prompt is the most common change to this engine and the one least related
-to its code. `<repo>/.mae/prompts/<name>.md` overrides the built-in, so a project
-can adapt the wording without forking anything.
-"""
+"""Prompts are files: engine/prompts/<name>.md, overridable per repo at <repo>/.mae/prompts/<name>.md."""
 from pathlib import Path
 
 BUILTIN = Path(__file__).resolve().parent / "prompts"
@@ -19,7 +14,7 @@ def path(name: str, repo: str | Path | None = None) -> Path:
 
 
 def load(name: str, repo: str | Path | None = None, **fields) -> str:
-    """Read the prompt and fill its {placeholders}."""
+    """Read the prompt and fill its {placeholders}; an unknown one fails with the list of what's available."""
     source = path(name, repo)
     if source != BUILTIN / f"{name}.md":
         print(f"[{name}] using prompt override {source}", flush=True)

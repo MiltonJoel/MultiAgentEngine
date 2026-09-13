@@ -1,3 +1,4 @@
+"""The only node that writes. Prompt: engine/prompts/coder.md, stable content first (cacheable prefix)."""
 import json
 from pathlib import Path
 
@@ -5,9 +6,6 @@ from engine import prompts
 from engine.cli import run_agent
 from engine.state import GraphState
 
-# The prompt lives in engine/prompts/coder.md — stable content first, volatile last:
-# the spec and the instructions are byte-identical across iterations, so they sit in
-# the cacheable prefix while the work queue and findings come after them.
 TIMEOUT = 5400
 
 
@@ -25,8 +23,6 @@ def coder_node(state: GraphState) -> dict:
     run_agent(
         state["agents"]["coder"], prompt, cwd=state["repo"], label="coder",
         write=True, timeout=TIMEOUT,
-        # without these the coder silently cannot touch the plan, nor read any
-        # reference codebase the spec points at
         add_dirs=[str(plan_path.parent), str(spec_path.parent), *state.get("allow_dirs", [])],
     )
     return {"iteration": state["iteration"] + 1}

@@ -12,27 +12,20 @@ from pathlib import Path
 
 from engine import runlog
 
-# Errors that clear on their own — the CLI classifies these internally as
-# rate_limit / billing_error / overloaded and ends the turn.
+# Errors that clear on their own; the reset time may be a unix epoch or "resets <ISO> UTC".
 RETRYABLE = re.compile(r"limit reached|rate.?limit|overloaded", re.IGNORECASE)
-# A reset time may come through as a unix epoch or as "resets <ISO> UTC".
 RESET_EPOCH = re.compile(r"(?:reset\w*|reached)\D{0,20}(\d{10})\b")
 RESET_ISO = re.compile(r"resets?\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})\s*UTC", re.IGNORECASE)
-# When codex's client is older than the server's model list it logs one ERROR line
-# carrying the whole models JSON (~325 KB). Non-fatal — it falls back to defaults
-# and exits 0 — but it drowns the terminal and would otherwise be scanned by the
-# rate-limit detector below.
+# Non-fatal codex log line carrying ~325 KB of models JSON; dropped from the stream.
 CODEX_NOISE = re.compile(r"failed to refresh available models")
-DEFAULT_WAIT = 1800  # no reset time in the output: check back in 30 min
+DEFAULT_WAIT = 1800  # no reset time in the output
 CLOCK_SKEW = 30
 MAX_WAITS = 4
-# A session limit resets in hours and is worth sleeping through; a monthly spend
-# cap is not. Anything past this is reported instead of waited on.
-MAX_SLEEP = 6 * 3600
+MAX_SLEEP = 6 * 3600  # a session limit is worth waiting out; a monthly cap is not
 
 
 def _retry_delay(text: str, now: float | None = None) -> float:
-    """Seconds to wait before retrying a failed run; 0 if it wasn't a limit error."""
+    """Seconds to wait before retrying; 0 if it wasn't a limit error."""
     if not RETRYABLE.search(text):
         return 0.0
     now = time.time() if now is None else now
@@ -47,11 +40,7 @@ def _retry_delay(text: str, now: float | None = None) -> float:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process group, not just the CLI.
-
-    `claude` and `codex` spawn their own children; killing only the parent leaves
-    them running against the repo after a timeout or a Ctrl-C.
-    """
+    """Kill the whole process group — the CLIs spawn children that would keep editing the repo."""
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
@@ -59,12 +48,11 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render) -> tuple[list[str], int]:
-    """Run cmd with prompt piped on stdin (avoids OS argv-size limits on long prompts),
-    printing progress live while capturing every raw line."""
+    """Run cmd with the prompt on stdin, printing progress live; returns (raw lines, exit code)."""
     print(f"\n--- {label} ---", flush=True)
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, start_new_session=True,  # own process group, so the kill reaches the children
+        text=True, bufsize=1, start_new_session=True,
     )
     proc.stdin.write(prompt)
     proc.stdin.close()
@@ -87,7 +75,7 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
             if shown:
                 print(f"[{label}] {shown}", flush=True)
         proc.wait()
-    except BaseException:  # Ctrl-C included: never leave the agent writing to the repo
+    except BaseException:  # Ctrl-C included
         _kill_tree(proc)
         raise
     finally:
@@ -98,11 +86,7 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
 
 
 def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render=None) -> list[str]:
-    """Run cmd, sleeping through usage/rate limits until they reset.
-
-    Only a non-zero exit is inspected, so a run that merely *mentions* rate limits
-    in its output can't trigger a spurious sleep.
-    """
+    """Run cmd, sleeping through usage/rate limits until they reset. Only a non-zero exit is inspected."""
     for attempt in range(MAX_WAITS + 1):
         lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
         if code == 0:
@@ -110,7 +94,6 @@ def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, r
         delay = _retry_delay("".join(lines))
         if not delay or attempt == MAX_WAITS:
             raise RuntimeError(f"{label} failed (exit {code})")
-        # local time, so the printed resume time matches the user's clock
         resume = datetime.now(timezone.utc).astimezone().replace(microsecond=0) + timedelta(seconds=delay)
         if delay > MAX_SLEEP:
             raise RuntimeError(
@@ -129,7 +112,7 @@ def _claude_progress(line: str) -> str:
     try:
         ev = json.loads(line)
     except ValueError:
-        return line.rstrip()  # stderr noise, not JSON: show as-is
+        return line.rstrip()
     kind = ev.get("type")
     if kind == "assistant":
         parts = []
@@ -148,60 +131,51 @@ def _claude_progress(line: str) -> str:
     return ""
 
 
-def _claude_result(lines: list[str]) -> str:
-    """Final answer text from a `claude --output-format stream-json` transcript.
-
-    Critical: returning only this (instead of the whole transcript) is what keeps the
-    graph state from snowballing, since every node's output is re-injected downstream.
-    """
+def _claude_final(lines: list[str]) -> dict:
+    """The `result` event of a stream-json transcript; {} if it never arrived."""
     for line in reversed(lines):
         try:
             ev = json.loads(line)
         except ValueError:
             continue
         if ev.get("type") == "result":
-            return (ev.get("result") or "").strip()
-    return ""
+            return ev
+    return {}
+
+
+def _claude_result(lines: list[str]) -> str:
+    """Final answer only — never the transcript, or the graph state would snowball."""
+    return (_claude_final(lines).get("result") or "").strip()
 
 
 def _claude_usage(lines: list[str]) -> dict:
-    """Token counts and cost from the final result event; {} if it never arrived."""
-    for line in reversed(lines):
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        if ev.get("type") == "result":
-            usage = ev.get("usage", {})
-            return {"cost_usd": ev.get("total_cost_usd", 0.0),
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0)}
-    return {}
+    ev = _claude_final(lines)
+    if not ev:
+        return {}
+    usage = ev.get("usage", {})
+    return {"cost_usd": ev.get("total_cost_usd", 0.0),
+            "input_tokens": usage.get("input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0)}
 
 
 def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 600,
                add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
-    """add_dirs = extra directories the tools may touch, for anything outside cwd —
-    the plan file, plus any codebase the plan tells the agent to read."""
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
-    if schema:
-        # claude has no --output-schema; asking is the best it can do, and the
-        # callers already tolerate a chatty or fenced reply.
+    if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
         prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
-    with runlog.Timer() as elapsed:
-        lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress)
-    runlog.log("agent", label=label, agent="claude", seconds=elapsed.seconds,
+    started = time.monotonic()
+    lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress)
+    runlog.log("agent", label=label, agent="claude", seconds=round(time.monotonic() - started, 1),
                prompt_chars=len(prompt), **_claude_usage(lines))
     return _claude_result(lines)
 
 
 def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1200,
               add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
-    """schema = JSON Schema the final response must conform to, enforced by codex."""
     if add_dirs:
         print(f"[{label}] codex has no --add-dir: {', '.join(add_dirs)} will not be readable", flush=True)
     fd, last_message = tempfile.mkstemp(suffix=".txt")
@@ -215,10 +189,10 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
             json.dump(schema, f)
         cmd += ["--output-schema", schema_file]
     try:
-        with runlog.Timer() as elapsed:
-            _stream(cmd, prompt, cwd, timeout=timeout, label=label)
-        # codex reports no cost of its own, so seconds is all there is to log
-        runlog.log("agent", label=label, agent="codex", seconds=elapsed.seconds, prompt_chars=len(prompt))
+        started = time.monotonic()
+        _stream(cmd, prompt, cwd, timeout=timeout, label=label)
+        runlog.log("agent", label=label, agent="codex", seconds=round(time.monotonic() - started, 1),
+                   prompt_chars=len(prompt))  # codex reports no cost of its own
         return Path(last_message).read_text().strip()
     finally:
         os.unlink(last_message)
@@ -226,15 +200,12 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
             os.unlink(schema_file)
 
 
-# Which CLI plays which role is configuration, not code: every runner takes the same
-# arguments, so any of them can be pointed at any role from the repo config or --agent.
+# Which CLI plays which role is configuration; every runner takes the same arguments.
 RUNNERS = {"claude": run_claude, "codex": run_codex}
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
 
 
 def run_agent(agent: str, prompt: str, cwd: str, label: str, **kwargs) -> str:
-    """Dispatch to the CLI bound to this role. Unknown name = a typo in the config,
-    and finding out three hours into a run is not the time."""
     try:
         runner = RUNNERS[agent]
     except KeyError:

@@ -10,31 +10,112 @@ nothing open left.
 
 ---
 
-## Requirements
+## Quick start
 
-| Thing | Why | Notes |
-|---|---|---|
-| `claude` CLI, logged in | the coder | must be on `PATH`, already authenticated |
-| `codex` CLI, logged in | the reviewer and auditor | must be on `PATH`, already authenticated |
-| `pytest` | the default test gate | run inside the **target** repo; swap it with `--test-cmd` |
-| `ruff` | the default lint gate | optional — skipped if not installed; swap it with `--lint-cmd` |
-| `git` | checkpoints in the target repo | optional — without it the run has no rollback point |
-| `pip install -e .` | `langgraph`, and the `mae` command | for this engine, not the target repo |
-
-No API keys are configured here. The engine shells out to CLIs you have already
-logged into.
+### 1. Install once
 
 ```bash
-pip install -e .     # or: pipx install -e .  → `mae` on PATH, runnable from any repo
+cd MultiAgentEngine
+pip install -e .          # or: pipx install -e .  → puts `mae` on PATH
 ```
+
+Check the tools it shells out to:
+
+```bash
+which mae claude codex pytest ruff git
+```
+
+| Thing | Role | Notes |
+|---|---|---|
+| `claude` CLI, logged in | the coder | on `PATH`, already authenticated |
+| `codex` CLI, logged in | reviewer and auditor | on `PATH`, already authenticated — or bind those roles to `claude` |
+| `pytest` | default test gate | runs inside the **target** repo; swap with `--gate` |
+| `ruff` | default lint gate | skipped if missing. **Not the snap build** — see [Troubleshooting](#troubleshooting) |
+| `git` | checkpoints in the target repo | optional — without it there is no rollback point |
+
+No API keys are configured here. The engine uses CLIs you have already logged into.
+
+### 2. Put two files in the repo you want built
+
+```bash
+cd ~/code/myproject
+mkdir -p .mae
+echo ".mae/runs/" >> .gitignore
+```
+
+**`.mae/spec.md`** — what the system must be. Any format, prose is fine. The engine
+never edits it.
+
+```markdown
+# Spec
+A FastAPI service with email/password login, password reset by emailed token,
+and per-user rate limiting of 100 requests/minute. Postgres via SQLAlchemy.
+Every endpoint has a pytest test.
+```
+
+**`.mae/plan.md`** — the work queue. The block at the top is what the engine routes
+on. One line per unit of work:
+
+```markdown
+<!-- ENGINE-STATUS
+Login flow: TODO
+Password reset: TODO
+Rate limiting: TODO
+-->
+
+# Notes
+Anything that needs more than one line goes down here. The engine never parses it,
+but the coder reads it.
+```
+
+### 3. Run it
+
+```bash
+mae --repo ~/code/myproject        # or cd there and just run: mae
+```
+
+It prints what it is about to do before any agent starts — Ctrl-C now if it is wrong:
+
+```
+Plan: TODO=3
+This run: Login flow, Password reset, Rate limiting
+Log: ~/code/myproject/.mae/runs/20260913-101500.jsonl
+Agents: coder=claude, reviewer=codex, auditor=codex
+Gates: pytest -q --tb=line --no-header ; ruff check . --output-format json
+[git] working on branch engine/20260913-101500
+```
+
+Then it loops (coder → tests → reviewer or auditor → coder …) until every line is
+`DONE` or `BLOCKED` and the audit comes back clean. A run can take hours; leave it.
+
+### 4. Review what it did
+
+At the end it prints the exact command:
+
+```bash
+git -C ~/code/myproject log --oneline <base>..engine/20260913-101500   # one commit per pass
+git -C ~/code/myproject diff <base>                                     # the whole run
+```
+
+Merge the branch if you like it, `git reset --hard <sha>` to any pass if you don't.
+
+### 5. Ask for more
+
+Add or reopen a line in the block and run `mae` again:
+
+```
+Rate limiting: TODO — limit is per user, not per IP
+Audit log for logins: TODO
+```
+
+That is the whole daily workflow: **edit the block, run `mae`, review the branch.**
 
 ---
 
 ## The two files you own
 
-They live **in the target repo**, not in this one: `<repo>/.mae/spec.md` and
-`<repo>/.mae/plan.md`. The engine ships no documents of its own, so one install
-drives any number of projects and never has to be edited to point at a new one.
+They live **in the target repo**, not in this one. The engine ships no documents of
+its own, so one install drives any number of projects.
 
 ```
 <repo>/.mae/
@@ -46,27 +127,24 @@ drives any number of projects and never has to be edited to point at a new one.
 ```
 
 Anywhere else works too — `--spec`/`--plan`, or the `spec`/`plan` keys in
-`config.json`. The engine deliberately splits what changes from what does not.
+`config.json`.
 
-### `--spec` — the architecture (frozen)
+### `spec.md` — the architecture (frozen)
 
-Your blueprint: what the system must be. Requirements, interfaces, dataclasses,
-diagrams, invariants. Any format — prose is fine.
+Requirements, interfaces, data models, diagrams, invariants. Only you edit it. It is
+sent first in every prompt and does not change between iterations, so it sits in the
+model's cached prefix and costs ~10% after the first call.
 
-**The engine never edits this file.** Only you do. It is sent first in every
-prompt and does not change between iterations, so it sits in the model's cached
-prefix and costs ~10% after the first call.
-
-### `--plan` — the work queue (churns)
+### `plan.md` — the work queue (churns)
 
 Holds the **status block**, an HTML comment the engine parses:
 
 ```
 <!-- ENGINE-STATUS
-Fase 1 — Event Bus: DONE
-Fase 2 — InstrumentRegistry: IN_PROGRESS
-Fase 3 — Broker Interface: TODO — cambié max_slippage a 0.001
-Fase 4 — Trading Calendar: BLOCKED faltan credenciales PPI
+Login flow: DONE
+Password reset: IN_PROGRESS
+Rate limiting: TODO — changed the window to 60s
+Payment webhook: BLOCKED need the provider's sandbox keys
 -->
 ```
 
@@ -83,58 +161,82 @@ Rules that matter:
 
 - One item per line, `<name>: <STATE>`. Text after the state is a free-form note
   and is preserved.
-- The name may contain colons and dashes (`Fase 6 — OMS: máquina de estados: DONE`
+- The name may contain colons and dashes (`Step 6 — Orders: state machine: DONE`
   parses correctly).
-- Position and order are irrelevant — the block is an index, not a sequence.
-- A line the parser cannot read is **reported, not silently dropped**.
+- Order is irrelevant — the block is an index, not a sequence.
+- A line the parser cannot read is **reported at startup, not silently dropped**.
 - Deleting `<!-- ENGINE-STATUS` or `-->` wipes the engine's memory of what is done.
+
+### Adding and changing work
+
+**The spec is the content; the status block is the routing.** The coder reads the
+whole spec, but only runs if the block has something open. Editing prose alone,
+with everything `DONE`, changes nothing.
+
+| You want | Do this |
+|---|---|
+| A small change | One line: `Idempotent retries on the sync job: TODO` |
+| To correct finished work | Flip it back with a note: `Rate limiting: TODO — per user, not per IP`. The coder treats a `TODO` whose code exists as "reconcile with the new note". |
+| A new subsystem | Describe it in the spec (or below the block), then add its line. Use the same name in both so the agent can find the detail. |
+| A shorter block | Delete old `DONE` lines. Keep at least one line — an empty block reads as "never started" and the coder rebuilds the plan from scratch. |
 
 ---
 
-## Running it
-
-```bash
-mae --repo ~/code/myproject         # or: python3 -m engine.main --repo ...
-```
-
-`--spec` and `--plan` default to `<repo>/.mae/spec.md` and `<repo>/.mae/plan.md`,
-so the command above is the whole invocation once those two files exist. If they are
-missing the engine says exactly which path it looked at and prints a starter block.
+## Flags
 
 | Flag | Meaning |
 |---|---|
-| `--spec FILE` | architecture doc (default: `<repo>/.mae/spec.md`) |
-| `--plan FILE` | work queue with the status block (default: `<repo>/.mae/plan.md`) |
 | `--repo DIR` | the repository being built (default `.`) |
+| `--spec FILE` | architecture doc (default `<repo>/.mae/spec.md`) |
+| `--plan FILE` | work queue (default `<repo>/.mae/plan.md`) |
 | `--allow-dir DIR` | extra directory the coder may read; repeatable |
-| `--test-cmd CMD` | test gate to run in the repo; `''` disables it |
-| `--lint-cmd CMD` | lint gate to run in the repo; `''` disables it |
+| `--gate CMD` | gate command run after every coder pass; repeatable, replaces the config list; `--gate ''` disables all gates |
 | `--agent ROLE=CLI` | bind a role to a CLI, e.g. `--agent reviewer=claude`; repeatable |
-| `--max-iterations N` | ceiling on coder passes (default 15) |
-| `--log-dir DIR` | where the JSONL run log goes (default `<repo>/.mae/runs`) |
-| `--no-git` | skip the per-run branch and the per-iteration commits |
-| `--archive` | compact the status block and exit; no agent runs |
+| `--max-iterations N` | ceiling on coder passes (default 15); must exceed the number of open units |
+| `--log-dir DIR` | JSONL run log directory (default `<repo>/.mae/runs`) |
+| `--no-git` | skip the per-run branch and per-iteration commits |
 
-Only one run per plan file: the second one exits immediately instead of
-interleaving its writes into the same status block.
+Only one run per plan file: a second one exits immediately instead of interleaving
+its writes into the same status block.
 
 `--allow-dir` matters more than it looks: the coder runs with `--repo` as its
-working directory and **cannot read or write outside it** otherwise. Point it at
-any codebase your spec tells the agent to consult:
+working directory and **cannot read outside it** otherwise. The spec's and plan's
+directories are added automatically; add any reference codebase yourself:
 
 ```bash
 mae --repo ~/code/myproject --allow-dir ~/code/reference-lib
 ```
 
-The spec's and plan's own directories are added automatically.
+---
 
-Before doing anything the engine prints what it thinks, so a bad edit costs a
-Ctrl-C instead of a run:
+## Per-repo settings — `.mae/config.json`
 
+Optional. Saves typing flags on every run. CLI flags override it.
+
+```json
+{
+  "spec": "docs/architecture.md",
+  "plan": "docs/queue.md",
+  "gates": [
+    "npm test -- --run",
+    {"cmd": "tsc --noEmit", "ok_codes": [0, 1]},
+    "eslint . -f json"
+  ],
+  "agents": {"reviewer": "claude", "auditor": "claude"},
+  "max_iterations": 20,
+  "allow_dirs": ["~/code/reference-lib"]
+}
 ```
-Plan: BLOCKED=1 DONE=16 TODO=1
-This run: Fase 11 — Reintentos idempotentes
-```
+
+- `spec` / `plan` — resolved against the repo; set only to move them out of `.mae/`.
+- `gates` — run in order. An entry is a command string (exit 0 = pass), or
+  `{"cmd", "ok_codes"}` when other exit codes also count as a pass. `[]` = no gates.
+  Omitted = pytest then ruff.
+- `agents` — roles are `coder`, `reviewer`, `auditor`; CLIs are `claude`, `codex`.
+
+A gate passed with `--gate` only accepts exit 0. pytest exits 5 when it collects no
+tests, so for a repo without tests yet use the config form
+`{"cmd": "pytest -q --tb=line", "ok_codes": [0, 5]}` (the default gates already do this).
 
 ---
 
@@ -144,350 +246,198 @@ This run: Fase 11 — Reintentos idempotentes
                    ┌──────────────────────────────────────────┐
                    ↓                                          │
  spec + queue → CODER → TESTER → tests pass? ── no → REVIEWER ─┘
-                                     │                        │
-                                     yes                 (iteration < 15)
+                                     │
+                                     yes
                                      ↓
-                              queue has open items? ── yes ────┘
+                              queue has open items? ── yes → CODER
                                      │
                                      no
                                      ↓
-                              already audited? ── no → AUDITOR ── findings? ─┐
-                                     │                                  yes  │
-                                     yes                                ─────┘
-                                     ↓                                   no
-                                    END ←────────────────────────────────┘
+                              already audited? ── no → AUDITOR ── findings? ── yes → CODER
+                                     │                                  │
+                                     yes                                no
+                                     ↓                                  ↓
+                                    END ←───────────────────────────────┘
 ```
 
-**CODER** (`claude`, `acceptEdits`, 90 min) — implements open items and updates the
-status block *incrementally*, flipping each unit to `DONE` as its code lands. It
-does not run the tests; that is the tester's job. It is the only node that writes.
+Every edge back to the coder stops at `--max-iterations`. It is a ceiling, not a
+target — the loop exits as soon as nothing is open.
 
-**TESTER** (no LLM, free) — runs the project's own gates in order (by default
-`pytest -q --tb=line --no-header` then `ruff check . --output-format json`) and turns
-their output into structured errors:
+**CODER** (`claude`, can edit files, 90 min budget) — implements open items and
+flips each line to `DONE` as its code lands, so a killed session loses nothing. It
+does not run the tests. It is the only node that writes.
+
+**TESTER** (no LLM, free) — runs the gates in order and turns their output into
+structured errors, capped at 20:
 
 ```json
-[{"file": "argbot/oms/order_manager.py", "line": 84, "description": "assert 0 == 2"}]
+[{"file": "app/auth/login.py", "line": 84, "description": "assert 0 == 2"}]
 ```
 
-Capped at 20 errors. `pytest` exit code 5 ("no tests collected") counts as a pass,
-so a repo without tests doesn't loop forever. A missing tool is skipped, not failed.
-
-The **commands are configuration, not code**, so the same engine drives a Python, a
-JS or a Go repo: `--test-cmd "npm test"`, `--lint-cmd "eslint . -f json"`, or a
-`.mae/config.json` in the target repo (below). Parsing tries, in order, ruff/eslint JSON,
-then `path:line[:col]: message` — which covers pytest `--tb=line`, ruff, mypy, tsc,
-eslint compact, `go vet` and gcc — then falls back to the last 800 characters of raw
-output. An unrecognised tool degrades to a blunt error; it never breaks the loop.
-
-It also **commits after every pass**, red ones included: each iteration becomes a
-rollback point and a readable diff.
+Parsing tries ruff/eslint JSON, then `path:line[:col]: message` (pytest `--tb=line`,
+ruff, mypy, tsc, eslint compact, `go vet`, gcc), then the last 800 characters of raw
+output. An unknown tool degrades to a blunt error; it never breaks the loop. A tool
+that isn't installed is skipped. It **commits after every pass**, red ones included.
 
 **REVIEWER** (`codex`, read-only) — runs **only on a red build**. Sees the spec,
-the queue, the errors **and the diff of the pass that just failed**, so it reads the
-change instead of guessing at the repo; returns root causes as JSON via
-`--output-schema`:
+the queue, the errors and the diff of the pass that just failed; returns root causes
+as JSON:
 
 ```json
 {"problems": [{"file": "...", "line": 84, "description": "why it fails",
                "suggested_fix": "what to change"}]}
 ```
 
-**AUDITOR** (`codex`, read-only) — runs **once per run**, when the tests pass and
-the queue is closed. Sees the diff of the whole run (against the baseline commit) on
-top of the spec and the queue. Checks the code against the spec, because the coder
-marked its own homework and passing tests do not prove the spec was delivered. It looks for
-units marked `DONE` that are stubbed, contradict the spec, or have no test covering
-required behaviour. Its findings go back to the coder as `problems`.
+**AUDITOR** (`codex`, read-only) — runs **once per run**, when tests pass and the
+queue is closed. The coder marked its own homework, so the auditor reads the diff of
+the whole run against the spec and reports units marked `DONE` that are stubbed,
+contradict the spec, or have no test for required behaviour. Scoped to the units that
+were open when the run started, so one small addition doesn't re-audit everything.
+Findings go back to the coder.
 
-The audit is **scoped to the units that were open when the run started**, so
-adding one small item does not re-audit everything.
-
-`--max-iterations` (default 15) bounds every edge back to the coder. It is a
-ceiling, not a target — the loop exits as soon as nothing is open. It must exceed
-the number of units in the plan.
-
-Diffs are capped at 20 000 characters, `--stat` first, so a big pass can't flood the
-two prompts that follow it.
+Diffs sent to the reviewer and auditor are capped at 20 000 characters, `--stat` first.
 
 ---
 
 ## Roles, CLIs and prompts
 
-The engine orchestrates *roles*; which CLI fills a role is configuration:
+Which CLI fills a role is configuration:
 
 ```bash
-mae --agent reviewer=claude --agent auditor=claude    # one vendor for everything
-```
-
-```json
-{"agents": {"coder": "claude", "reviewer": "codex", "auditor": "codex"}}
+mae --agent reviewer=claude --agent auditor=claude    # claude only, no codex needed
 ```
 
 Every runner takes the same arguments (`write`, `add_dirs`, `schema`, `timeout`), so
-adding a third CLI is one entry in `RUNNERS` in `engine/cli.py` and a function that
-shells out to it. Two caveats the engine tells you about instead of hiding:
-`codex` has no `--add-dir` (it warns if a role that needs one is bound to it), and
-`claude` has no output schema, so it is asked for JSON in the prompt instead — the
-parser already tolerates a chatty reply.
+adding a third CLI is one function plus one entry in `RUNNERS` in `engine/cli.py`.
+Two caveats the engine warns about: `codex` has no `--add-dir`, and `claude` has no
+output schema, so it is asked for JSON in the prompt instead.
 
-The prompts are **files, not code**: `engine/prompts/{coder,reviewer,auditor}.md`.
-Drop `.mae/prompts/<role>.md` in the target repo to override one per project — the
-engine prints which file it used. Placeholders are `{}`-formatted; an unknown one
-fails at load with the list of what the node actually passes, and a literal brace
-must be doubled `{{ }}`.
+The prompts are files: `engine/prompts/{coder,reviewer,auditor}.md`. To change one
+for a single project, copy it to `<repo>/.mae/prompts/<role>.md` and edit — the
+engine prints when it uses an override. Placeholders are `{name}`; an unknown one
+fails at startup with the list of available names; a literal brace must be doubled
+`{{ }}`.
 
 ---
 
-## Checkpoints in the target repo
+## Checkpoints
 
-The coder writes for hours with `acceptEdits`. Before the first pass the engine
-branches:
+Before the first pass the engine branches in the target repo and commits any
+uncommitted work as a baseline, so nothing of yours is lost or mixed into the
+agent's diffs:
 
 ```
-[git] working on branch engine/20260901-1939
+[git] working on branch engine/20260913-101500
 [git] 37aeaf3 engine: iteration 1 — 3 error(s)
 [git] a91c02b engine: iteration 2 — green
 ```
 
-`checkout -b` keeps your working tree, so uncommitted work carries over and is
-captured by the first checkpoint rather than lost. Afterwards:
-
 ```bash
-git -C <repo> log --oneline main..engine/20260901-1939   # what the run did
-git -C <repo> diff HEAD~1                                # what the last pass did
-git -C <repo> reset --hard <sha>                         # undo back to any pass
+git -C <repo> diff HEAD~1          # what the last pass did
+git -C <repo> reset --hard <sha>   # undo back to any pass
 ```
 
-If the target isn't a git repo the run still works, unprotected, and says so.
-`--no-git` opts out deliberately.
-
----
-
-## Per-repo settings — `.mae/config.json`
-
-Drop it in the target repo so daily use across projects isn't a wall of flags:
-
-```json
-{
-  "spec": "docs/architecture.md",
-  "plan": "docs/queue.md",
-  "gates": [
-    {"cmd": "npm test -- --run", "ok_codes": [0]},
-    {"cmd": "tsc --noEmit"},
-    {"cmd": "eslint . -f json"}
-  ],
-  "agents": {"reviewer": "claude"},
-  "max_iterations": 20,
-  "allow_dirs": ["~/code/reference-lib"]
-}
-```
-
-`spec` and `plan` are optional and resolved against the repo — set them only to move
-the documents out of `.mae/`. (`.mae.json` at the repo root is still read, for repos
-set up before the directory existed.)
-
-`gates` is the general form — any number of tools, run in order, each with its own
-tolerated exit codes. `--test-cmd`/`--lint-cmd` are the two-gate shortcut and are
-refused if `gates` is present, rather than silently losing to it. CLI flags override
-everything else.
+Not a git repo? The run still works, unprotected, and says so. `--no-git` opts out.
 
 ---
 
 ## The run log
 
-Every run appends one JSONL file under `<repo>/.mae/runs/`, so a 90-minute night
-run leaves something behind besides scrollback:
+One JSONL file per run under `<repo>/.mae/runs/`:
 
 ```bash
-tail -f <repo>/.mae/runs/20260901-193914.jsonl               # live
+tail -f <repo>/.mae/runs/*.jsonl                                                      # live
 jq -r 'select(.event=="agent") | "\(.label) \(.seconds)s $\(.cost_usd)"' <repo>/.mae/runs/*.jsonl
 jq 'select(.event=="finish") | .usage' <repo>/.mae/runs/*.jsonl
 ```
 
-Events: `start`, `agent` (per CLI call: seconds, tokens, cost), `gate` (errors
-found), `checkpoint` (sha), `limit` (rate-limit sleeps), `finish` / `aborted`.
-A killed run still writes its `aborted` line and keeps its checkpoints.
+Events: `start`, `agent` (per CLI call: seconds, tokens, cost), `gate`, `checkpoint`,
+`limit` (rate-limit sleeps), `finish` / `aborted`. A killed run still writes
+`aborted` and keeps its checkpoints.
 
 ---
 
-## Adding and changing work
+## Cost and limits
 
-**The spec is the content; the status block is the routing.** The coder reads the
-whole spec, but only runs if the block has something open. Editing prose alone,
-with everything `DONE`, changes nothing — that is the one silent failure mode.
-
-**A small change is one line.** Do not write a prose section for it:
-
-```
-Reintentos idempotentes en reconciliación: TODO
-```
-
-**A correction to finished work** — flip it back with a note saying what changed:
-
-```
-Fase 7 — Aggressive Limit Policy: TODO — max_slippage baja a 0.001, exige book de 3 niveles
-```
-
-The coder is told that a `TODO` whose code already exists means you edited
-something, and to reconcile rather than assume it is finished.
-
-**A genuinely new subsystem** — describe it in the spec (or below the block in the
-work file) and add its line. Match the names so the agent can find the detail.
-
-**When the block gets long:**
-
-```bash
-mae --archive
-```
-
-Moves `DONE` lines into `<plan>.archive` (so `.mae/plan.md.archive`) with a timestamp. Deterministic, no
-agent, no cost. Nothing is lost: moved lines are appended verbatim, and lines the
-parser doesn't understand stay put. If everything was archived it leaves one
-summary line behind — an empty block would read as "never started" and make the
-coder rebuild the plan from scratch. The archive is never sent to any model.
-
----
-
-## Cost behaviour
-
-Roughly, for a ~10k-char spec:
-
-```
-coder prompt
-├─ spec + instructions ── ~2,660 tokens ── identical every call → cached (~10%)
-└─ queue + findings ────── ~450 tokens ── volatile, full price
-```
-
-Stable content is deliberately first and volatile content last. Watch the progress
-line to confirm the cache is working:
+The coder prompt puts stable content first (spec + instructions, cached at ~10%) and
+volatile content last (queue + findings, full price). Confirm the cache is working
+from the progress line — a high `cache_read` is what you want:
 
 ```
 [coder] done — in=1204 cache_read=2610 out=880 cost=$0.0431
 ```
 
-A high `cache_read` means the split is paying off. Other cost decisions baked in:
+Only agents' final answers enter the graph state, never their transcripts; the
+tester costs nothing; the reviewer runs only on failure and the auditor only once.
 
-- Only the agents' **final answers** enter the graph state, never their transcripts
-  — otherwise each iteration's prompt would carry the previous one's full log.
-- The tester is deterministic, so the loop's gate costs nothing.
-- The reviewer runs only on failure; the auditor only once.
-- Test output is capped so a traceback can't flood three prompts.
-
----
-
-## Usage limits
-
-If a CLI dies on a usage or rate limit, the engine sleeps until it resets and
-retries — the run survives instead of dying halfway:
+If a CLI dies on a usage or rate limit, the engine sleeps until the reset time in
+its output (30 min if none), up to 4 times per call:
 
 ```
 [coder] limit reached — sleeping 47 min, resuming ~15:32
 ```
 
-- Only a **non-zero exit** is inspected, so an agent that merely *mentions* rate
-  limits in its output can't trigger a spurious sleep.
-- The reset time is read from the CLI output (unix epoch or `resets <ISO> UTC`);
-  with no parseable time it waits 30 minutes.
-- Waits longer than **6 hours** are refused — a session limit is worth waiting out,
-  a monthly spend cap is not. You get the reset date instead.
-- At most 4 waits per call.
-
-Work is not lost if you kill the run: the code is on disk and the status block is
-updated incrementally, so the next run picks up from there — and Ctrl-C kills the
-agent's whole process group, so nothing keeps editing the repo behind your back.
-
----
-
-## Files
-
-```
-MultiAgentEngine/
-├── pyproject.toml           deps, and the `mae` entry point
-├── conftest.py              puts the project root on sys.path for pytest
-├── engine/                  the engine itself — nothing user-editable
-│   ├── main.py              entry point: CLI, validation, run lock, --archive
-│   ├── graph.py             LangGraph wiring, plan parsing, routing
-│   ├── state.py             GraphState
-│   ├── git.py               per-run branch, checkpoints, diffs for the reviewers
-│   ├── prompts.py           prompt loading, with per-repo override
-│   ├── prompts/             the prompts themselves — editable without touching code
-│   ├── runlog.py            JSONL run log, cost and token totals
-│   ├── cli.py               CLI runners (RUNNERS), limit handling, output parsing
-│   └── nodes/
-│       ├── coder.py         implementation agent
-│       ├── tester.py        deterministic, configurable test + lint gate
-│       └── reviewer.py      failure analyst **and** auditor (shared schema)
-└── tests/
-    ├── test_engine.py       plan parsing, routing, output parsing
-    ├── test_ops.py          checkpoints, run lock, per-repo config
-    └── test_modular.py      the seams: role→CLI, prompts, documents, gates, diffs
-```
-
-Nothing here is project-specific. Everything you write lives in the repo being
-built:
-
-```
-<your repo>/.mae/
-├── spec.md          --spec
-├── plan.md          --plan
-├── plan.md.archive  written by --archive, never read by a model
-├── config.json      per-repo settings (optional)
-├── prompts/         per-repo prompt overrides (optional)
-└── runs/            JSONL run logs — gitignore this one
-```
-
-Run the suite with:
-
-```bash
-python3 -m pytest tests/ -q
-```
+Waits over 6 hours are refused with the reset date — a session limit is worth
+waiting out, a monthly cap is not. Ctrl-C kills the agent's whole process group, and
+the next run resumes from the status block.
 
 ---
 
 ## Troubleshooting
 
-**`codex ... failed to refresh available models: unknown variant 'max'`**
-Harmless — codex falls back to defaults and exits 0. The engine suppresses the
-(325 KB) log line and prints one note instead. Fix the cause with
-`npm i -g @openai/codex@latest`.
-
-**Lint silently passes on everything**
-If `ruff` came from snap it cannot write its cache under `/tmp` and returns `[]`
-with exit 0 — lint appears green while checking nothing. Install it with pip, or
-keep the target repo under `$HOME`.
-
-**The coder didn't update the plan**
-Almost always a permissions issue: the plan lives outside `--repo` and its
-directory wasn't allowed. The engine adds it automatically now; if the spec points
-at another codebase, add it with `--allow-dir`.
-
-**`has nothing left open — every item is DONE or BLOCKED`**
-Working as intended. Add a line, or flip one back to `TODO`.
-
-**An item vanished from the tally**
-Its line didn't parse — an invented state (`PENDIENTE`) or a missing colon. The
-engine warns about these at startup, before the run.
-
-**You added a section but the engine says nothing is open**
-You wrote prose below the block without adding a status line, so the engine can't
-see it. The error lists the sections it found and the exact lines to paste:
-
-```
-These sections are written below the block but no status line mentions them,
-so the engine cannot see them. Add a line inside <!-- ENGINE-STATUS ... --> for each:
-
-    Capa de Persistencia: TODO
-    Observabilidad y Logging Estructurado: TODO
-```
+| Symptom | Cause and fix |
+|---|---|
+| `spec file not found: <repo>/.mae/spec.md` | Create it, or point `--spec` / `"spec"` at yours. The `plan` version of this error prints a starter block to paste. |
+| `has nothing left open — every item is DONE or BLOCKED` | Working as intended. Add a `TODO` line or reopen one. |
+| `WARNING: unreadable status line, it will be ignored` | An invented state (`PENDING`) or a missing colon. Fix the line. |
+| You wrote a new section but nothing runs | Prose is invisible to routing. Add a `<name>: TODO` line inside the block. |
+| `unknown CLI 'x' for coder` / `unknown role` | Typo in `--agent` or `"agents"`. Roles: coder, reviewer, auditor. CLIs: claude, codex. |
+| `another run already holds <plan>` | A run is still going on that plan. Wait, or kill it. |
+| Lint passes on everything | `ruff` from **snap** can't write its cache under `/tmp` and returns `[]` with exit 0. `snap remove ruff && pip install ruff`, or keep the target repo under `$HOME`. |
+| `codex ... failed to refresh available models` | Harmless; the engine hides the 325 KB log line. `npm i -g @openai/codex@latest` fixes it. |
+| The coder didn't update the plan | It couldn't reach the file. Spec/plan directories are allowed automatically; anything else needs `--allow-dir`. |
+| Loop ends with units still open | Hit `--max-iterations`. Raise it above the number of open units and re-run — it resumes. |
 
 ---
 
-## Suggested hygiene
+## Hygiene
 
-Commit `<repo>/.mae/` with the project it belongs to, and gitignore `.mae/runs/`.
-The status block is the only state that survives between runs; if an agent ever
-mangles it, `git diff` shows you in a second.
+- Commit `<repo>/.mae/` with its project; gitignore `.mae/runs/`.
+- The status block is the only state between runs; if an agent mangles it, `git diff`
+  shows you.
+- Delete old run branches once merged or discarded:
+  `git -C <repo> branch -D $(git -C <repo> branch --list 'engine/*')`.
 
-Delete stale `engine/*` branches in the target repo once you have merged or
-discarded them: `git -C <repo> branch -D $(git -C <repo> branch --list 'engine/*')`.
+---
+
+## Working on the engine itself
+
+```
+MultiAgentEngine/
+├── pyproject.toml       deps, and the `mae` entry point
+├── conftest.py          puts the project root on sys.path for pytest
+├── engine/
+│   ├── main.py          CLI parsing, config, validation, run lock, run()
+│   ├── graph.py         status-block parsing, routing, LangGraph wiring
+│   ├── state.py         GraphState
+│   ├── cli.py           claude/codex runners (RUNNERS), rate-limit sleeps
+│   ├── git.py           per-run branch, checkpoints, diffs
+│   ├── prompts.py       prompt loading with per-repo override
+│   ├── prompts/         coder.md, reviewer.md, auditor.md
+│   ├── runlog.py        JSONL run log, cost and token totals
+│   └── nodes/
+│       ├── coder.py     implementation agent
+│       ├── tester.py    deterministic gates and output parsing
+│       └── reviewer.py  reviewer and auditor (shared schema)
+└── tests/
+    ├── test_engine.py   plan parsing, routing, output parsing, run log
+    ├── test_modular.py  role→CLI, prompts, documents, gates, diffs, config
+    └── test_ops.py      checkpoints, run lock
+```
+
+```bash
+python3 -m pytest -q && ruff check .
+```
+
+Nothing under `engine/` is project-specific. If you find yourself editing it to point
+at a project, that belongs in the target repo's `.mae/` instead.
