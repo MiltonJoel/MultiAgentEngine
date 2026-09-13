@@ -147,7 +147,8 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     log_path = runlog.start(log_dir or repo / MAE_DIR / "runs")
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
-    print("This run: " + (", ".join(focus) if focus else "audit only"))
+    # main() refuses a finished plan, so no open units here means no status block yet
+    print("This run: " + (", ".join(focus) if focus else "no task list yet — the coder writes it from the spec and plan"))
     print(f"Log: {log_path}")
     print("Agents: " + ", ".join(f"{role}={cli}" for role, cli in agents.items()))
     print("Gates: " + (" ; ".join(" ".join(g["cmd"]) for g in gates) or "(none — nothing gates the coder)"))

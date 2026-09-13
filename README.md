@@ -1,41 +1,96 @@
 # MultiAgentEngine
 
-A LangGraph loop that drives two coding agents — the `claude` CLI and the `codex`
-CLI — against a repository until an architecture spec is implemented, tested and
-audited.
+Un bucle de LangGraph que dirige dos agentes de programación — la CLI `claude` y la
+CLI `codex` — contra un repositorio hasta que una especificación de arquitectura
+queda implementada, testeada y auditada.
 
-You write the spec and the work queue. The engine runs the agents, gates them on a
-deterministic test step, keeps the work queue up to date, and stops when there is
-nothing open left.
+Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, los
+valida con un paso de tests determinista, mantiene la cola de trabajo al día y se
+detiene cuando no queda nada abierto.
 
 ---
 
-## Quick start
+## Ejemplo de uso
 
-### 1. Install once
+Una sesión completa, de cero a una rama con el trabajo hecho. Copia y pega:
+
+```bash
+# 1. Instalar el motor (una sola vez)
+cd ~/Desktop/MultiAgentEngine && pip install -e .
+
+# 2. Preparar el proyecto que quieres construir
+mkdir -p ~/code/myproject/.mae && cd ~/code/myproject
+git init -q 2>/dev/null; echo ".mae/runs/" >> .gitignore
+
+cat > .mae/spec.md <<'EOF'
+# Spec
+Un servicio FastAPI con login por email/contraseña y límite de 100 peticiones/minuto
+por usuario. Cada endpoint tiene un test de pytest.
+EOF
+
+cat > .mae/plan.md <<'EOF'
+<!-- ENGINE-STATUS
+Login flow: TODO
+Rate limiting: TODO
+-->
+EOF
+
+# 3. Ejecutar
+mae
+
+# 4. Revisar el resultado (el comando exacto se imprime al final)
+git log --oneline --all --graph | head -20
+```
+
+Variantes habituales:
+
+```bash
+mae --repo ~/code/myproject                              # desde cualquier carpeta
+mae --agent reviewer=claude --agent auditor=claude       # solo claude, sin codex
+mae --gate "npm test" --gate "eslint . -f json"          # proyecto JavaScript
+mae --gate ''                                            # sin tests ni lint
+mae --allow-dir ~/code/reference-lib                     # el coder puede leer otro repo
+mae --max-iterations 30                                  # plan con muchas unidades
+mae --spec docs/arquitectura.md --plan docs/cola.md      # documentos fuera de .mae/
+mae --no-git                                             # sin rama ni commits
+```
+
+Para pedir más trabajo después, añade o reabre una línea en `.mae/plan.md` y vuelve a
+ejecutar `mae`:
+
+```bash
+sed -i 's/^Rate limiting: DONE/Rate limiting: TODO — por usuario, no por IP/' .mae/plan.md
+mae
+```
+
+---
+
+## Inicio rápido
+
+### 1. Instalar una vez
 
 ```bash
 cd MultiAgentEngine
-pip install -e .          # or: pipx install -e .  → puts `mae` on PATH
+pip install -e .          # o: pipx install -e .  → deja `mae` en el PATH
 ```
 
-Check the tools it shells out to:
+Comprueba las herramientas que usa:
 
 ```bash
 which mae claude codex pytest ruff git
 ```
 
-| Thing | Role | Notes |
+| Herramienta | Rol | Notas |
 |---|---|---|
-| `claude` CLI, logged in | the coder | on `PATH`, already authenticated |
-| `codex` CLI, logged in | reviewer and auditor | on `PATH`, already authenticated — or bind those roles to `claude` |
-| `pytest` | default test gate | runs inside the **target** repo; swap with `--gate` |
-| `ruff` | default lint gate | skipped if missing. **Not the snap build** — see [Troubleshooting](#troubleshooting) |
-| `git` | checkpoints in the target repo | optional — without it there is no rollback point |
+| CLI `claude`, con sesión iniciada | el programador (coder) | en el `PATH`, ya autenticada |
+| CLI `codex`, con sesión iniciada | revisor y auditor | en el `PATH`, ya autenticada — o asigna esos roles a `claude` |
+| `pytest` | gate de tests por defecto | se ejecuta dentro del repo **objetivo**; cámbialo con `--gate` |
+| `ruff` | gate de lint por defecto | se omite si no está instalado. **No uses la versión de snap** — ver [Solución de problemas](#solución-de-problemas) |
+| `git` | checkpoints en el repo objetivo | opcional — sin él no hay punto de restauración |
 
-No API keys are configured here. The engine uses CLIs you have already logged into.
+Aquí no se configuran claves de API. El motor usa CLIs en las que ya iniciaste sesión.
 
-### 2. Put two files in the repo you want built
+### 2. Pon dos archivos en el repo que quieres construir
 
 ```bash
 cd ~/code/myproject
@@ -43,18 +98,18 @@ mkdir -p .mae
 echo ".mae/runs/" >> .gitignore
 ```
 
-**`.mae/spec.md`** — what the system must be. Any format, prose is fine. The engine
-never edits it.
+**`.mae/spec.md`** — lo que el sistema debe ser. Cualquier formato, prosa incluida. El
+motor nunca lo edita.
 
 ```markdown
 # Spec
-A FastAPI service with email/password login, password reset by emailed token,
-and per-user rate limiting of 100 requests/minute. Postgres via SQLAlchemy.
-Every endpoint has a pytest test.
+Un servicio FastAPI con login por email/contraseña, recuperación de contraseña con
+token enviado por email y límite de 100 peticiones/minuto por usuario. Postgres vía
+SQLAlchemy. Cada endpoint tiene un test de pytest.
 ```
 
-**`.mae/plan.md`** — the work queue. The block at the top is what the engine routes
-on. One line per unit of work:
+**`.mae/plan.md`** — la cola de trabajo. El bloque del principio es lo que el motor usa
+para decidir qué hacer. Una línea por unidad de trabajo:
 
 ```markdown
 <!-- ENGINE-STATUS
@@ -63,18 +118,37 @@ Password reset: TODO
 Rate limiting: TODO
 -->
 
-# Notes
-Anything that needs more than one line goes down here. The engine never parses it,
-but the coder reads it.
+# Notas
+Todo lo que necesite más de una línea va aquí abajo. El motor nunca lo interpreta,
+pero el coder lo lee.
 ```
 
-### 3. Run it
+#### ¿Solo tienes la tarea, sin lista de TODOs?
+
+Es lo normal en la primera ejecución. Escribe la tarea y **no pongas el bloque**:
+
+```markdown
+# Tarea
+Implementar el servicio descrito en spec.md: login, recuperación de contraseña y
+límite de peticiones por usuario.
+```
+
+En la primera pasada el coder lee la especificación y la tarea, crea el bloque
+`ENGINE-STATUS` con una línea `TODO` por unidad y las va pasando a `DONE`. Al arrancar
+verás `This run: no task list yet — the coder writes it from the spec and plan`.
+
+A partir de la segunda ejecución el bloque ya existe: revísalo, corrige nombres o
+divide unidades si no te gusta cómo quedó, y sigue con el flujo normal. Si prefieres
+controlar la división desde el principio, escribe tú las líneas `TODO`.
+
+### 3. Ejecútalo
 
 ```bash
-mae --repo ~/code/myproject        # or cd there and just run: mae
+mae --repo ~/code/myproject        # o entra en la carpeta y ejecuta: mae
 ```
 
-It prints what it is about to do before any agent starts — Ctrl-C now if it is wrong:
+Antes de arrancar cualquier agente imprime lo que va a hacer — pulsa Ctrl-C si algo
+está mal:
 
 ```
 Plan: TODO=3
@@ -85,123 +159,128 @@ Gates: pytest -q --tb=line --no-header ; ruff check . --output-format json
 [git] working on branch engine/20260913-101500
 ```
 
-Then it loops (coder → tests → reviewer or auditor → coder …) until every line is
-`DONE` or `BLOCKED` and the audit comes back clean. A run can take hours; leave it.
+Después itera (coder → tests → revisor o auditor → coder …) hasta que todas las líneas
+estén en `DONE` o `BLOCKED` y la auditoría salga limpia. Una ejecución puede durar
+horas; déjala correr.
 
-### 4. Review what it did
+### 4. Revisa lo que hizo
 
-At the end it prints the exact command:
+Al terminar imprime el comando exacto:
 
 ```bash
-git -C ~/code/myproject log --oneline <base>..engine/20260913-101500   # one commit per pass
-git -C ~/code/myproject diff <base>                                     # the whole run
+git -C ~/code/myproject log --oneline <base>..engine/20260913-101500   # un commit por pasada
+git -C ~/code/myproject diff <base>                                     # la ejecución completa
 ```
 
-Merge the branch if you like it, `git reset --hard <sha>` to any pass if you don't.
+Haz merge de la rama si te gusta, o `git reset --hard <sha>` a cualquier pasada si no.
 
-### 5. Ask for more
+### 5. Pide más
 
-Add or reopen a line in the block and run `mae` again:
+Añade o reabre una línea del bloque y vuelve a ejecutar `mae`:
 
 ```
-Rate limiting: TODO — limit is per user, not per IP
+Rate limiting: TODO — el límite es por usuario, no por IP
 Audit log for logins: TODO
 ```
 
-That is the whole daily workflow: **edit the block, run `mae`, review the branch.**
+Ese es todo el flujo diario: **edita el bloque, ejecuta `mae`, revisa la rama.**
 
 ---
 
-## The two files you own
+## Los dos archivos que son tuyos
 
-They live **in the target repo**, not in this one. The engine ships no documents of
-its own, so one install drives any number of projects.
+Viven **en el repo objetivo**, no en este. El motor no incluye documentos propios, así
+que una sola instalación sirve para cualquier número de proyectos.
 
 ```
 <repo>/.mae/
-├── spec.md        --spec (default)
-├── plan.md        --plan (default)
-├── config.json    per-repo settings (optional)
-├── prompts/       per-repo prompt overrides (optional)
-└── runs/          JSONL run logs (gitignore this one)
+├── spec.md        --spec (por defecto)
+├── plan.md        --plan (por defecto)
+├── config.json    ajustes por repo (opcional)
+├── prompts/       prompts personalizados por repo (opcional)
+└── runs/          logs JSONL de cada ejecución (añádelo a .gitignore)
 ```
 
-Anywhere else works too — `--spec`/`--plan`, or the `spec`/`plan` keys in
-`config.json`.
+También pueden estar en otro sitio — con `--spec`/`--plan`, o con las claves
+`spec`/`plan` en `config.json`.
 
-### `spec.md` — the architecture (frozen)
+### `spec.md` — la arquitectura (congelada)
 
-Requirements, interfaces, data models, diagrams, invariants. Only you edit it. It is
-sent first in every prompt and does not change between iterations, so it sits in the
-model's cached prefix and costs ~10% after the first call.
+Requisitos, interfaces, modelos de datos, diagramas, invariantes. Solo tú lo editas. Se
+envía primero en cada prompt y no cambia entre iteraciones, así que queda en el prefijo
+cacheado del modelo y cuesta ~10% después de la primera llamada.
 
-### `plan.md` — the work queue (churns)
+### `plan.md` — la cola de trabajo (cambia constantemente)
 
-Holds the **status block**, an HTML comment the engine parses:
+Contiene el **bloque de estado**, un comentario HTML que el motor interpreta:
 
 ```
 <!-- ENGINE-STATUS
 Login flow: DONE
 Password reset: IN_PROGRESS
-Rate limiting: TODO — changed the window to 60s
-Payment webhook: BLOCKED need the provider's sandbox keys
+Rate limiting: TODO — cambié la ventana a 60s
+Payment webhook: BLOCKED faltan las claves sandbox del proveedor
 -->
 ```
 
-Everything outside the block is yours; the coder is told not to touch it.
+Todo lo que está fuera del bloque es tuyo; al coder se le indica que no lo toque.
 
-| State | Meaning | Engine behaviour |
+| Estado | Significado | Comportamiento del motor |
 |---|---|---|
-| `TODO` | not started, or you reopened it | keeps working |
-| `IN_PROGRESS` | started | keeps working |
-| `DONE` | code is written | leaves it alone |
-| `BLOCKED` | needs a human (credentials, a product decision) | stops retrying — put the reason on the line |
+| `TODO` | sin empezar, o lo reabriste | sigue trabajando |
+| `IN_PROGRESS` | empezado | sigue trabajando |
+| `DONE` | el código está escrito | no lo toca |
+| `BLOCKED` | necesita a una persona (credenciales, una decisión de producto) | deja de reintentar — escribe el motivo en la línea |
 
-Rules that matter:
+Los estados se escriben siempre en inglés y en mayúsculas; el nombre de cada unidad
+puede estar en el idioma que quieras.
 
-- One item per line, `<name>: <STATE>`. Text after the state is a free-form note
-  and is preserved.
-- The name may contain colons and dashes (`Step 6 — Orders: state machine: DONE`
-  parses correctly).
-- Order is irrelevant — the block is an index, not a sequence.
-- A line the parser cannot read is **reported at startup, not silently dropped**.
-- Deleting `<!-- ENGINE-STATUS` or `-->` wipes the engine's memory of what is done.
+Reglas importantes:
 
-### Adding and changing work
+- Un elemento por línea, `<nombre>: <ESTADO>`. El texto después del estado es una nota
+  libre y se conserva.
+- El nombre puede contener dos puntos y guiones (`Paso 6 — Pedidos: máquina de estados: DONE`
+  se interpreta bien).
+- El orden no importa — el bloque es un índice, no una secuencia.
+- Una línea que no se puede interpretar **se avisa al arrancar, no se descarta en silencio**.
+- Borrar `<!-- ENGINE-STATUS` o `-->` borra la memoria del motor sobre lo que está hecho.
 
-**The spec is the content; the status block is the routing.** The coder reads the
-whole spec, but only runs if the block has something open. Editing prose alone,
-with everything `DONE`, changes nothing.
+### Añadir y cambiar trabajo
 
-| You want | Do this |
+**La especificación es el contenido; el bloque de estado es el enrutamiento.** El coder
+lee toda la especificación, pero solo se ejecuta si el bloque tiene algo abierto. Editar
+solo la prosa, con todo en `DONE`, no cambia nada.
+
+| Quieres | Haz esto |
 |---|---|
-| A small change | One line: `Idempotent retries on the sync job: TODO` |
-| To correct finished work | Flip it back with a note: `Rate limiting: TODO — per user, not per IP`. The coder treats a `TODO` whose code exists as "reconcile with the new note". |
-| A new subsystem | Describe it in the spec (or below the block), then add its line. Use the same name in both so the agent can find the detail. |
-| A shorter block | Delete old `DONE` lines. Keep at least one line — an empty block reads as "never started" and the coder rebuilds the plan from scratch. |
+| Un cambio pequeño | Una línea: `Reintentos idempotentes en el job de sync: TODO` |
+| Corregir trabajo terminado | Reábrelo con una nota: `Rate limiting: TODO — por usuario, no por IP`. El coder entiende un `TODO` con código ya existente como "reconcilia con la nota nueva". |
+| Un subsistema nuevo | Descríbelo en la especificación (o debajo del bloque) y añade su línea. Usa el mismo nombre en ambos sitios para que el agente encuentre el detalle. |
+| Un bloque más corto | Borra líneas `DONE` antiguas. Deja al menos una — un bloque vacío se lee como "nunca empezado" y el coder rehace el plan desde cero. |
 
 ---
 
 ## Flags
 
-| Flag | Meaning |
+| Flag | Significado |
 |---|---|
-| `--repo DIR` | the repository being built (default `.`) |
-| `--spec FILE` | architecture doc (default `<repo>/.mae/spec.md`) |
-| `--plan FILE` | work queue (default `<repo>/.mae/plan.md`) |
-| `--allow-dir DIR` | extra directory the coder may read; repeatable |
-| `--gate CMD` | gate command run after every coder pass; repeatable, replaces the config list; `--gate ''` disables all gates |
-| `--agent ROLE=CLI` | bind a role to a CLI, e.g. `--agent reviewer=claude`; repeatable |
-| `--max-iterations N` | ceiling on coder passes (default 15); must exceed the number of open units |
-| `--log-dir DIR` | JSONL run log directory (default `<repo>/.mae/runs`) |
-| `--no-git` | skip the per-run branch and per-iteration commits |
+| `--repo DIR` | el repositorio que se construye (por defecto `.`) |
+| `--spec FILE` | documento de arquitectura (por defecto `<repo>/.mae/spec.md`) |
+| `--plan FILE` | cola de trabajo (por defecto `<repo>/.mae/plan.md`) |
+| `--allow-dir DIR` | directorio extra que el coder puede leer; repetible |
+| `--gate CMD` | comando de validación tras cada pasada del coder; repetible, reemplaza la lista del config; `--gate ''` desactiva todos los gates |
+| `--agent ROLE=CLI` | asigna un rol a una CLI, p. ej. `--agent reviewer=claude`; repetible |
+| `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
+| `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
+| `--no-git` | omite la rama por ejecución y los commits por iteración |
 
-Only one run per plan file: a second one exits immediately instead of interleaving
-its writes into the same status block.
+Una sola ejecución por archivo de plan: una segunda sale inmediatamente en vez de
+mezclar sus escrituras en el mismo bloque de estado.
 
-`--allow-dir` matters more than it looks: the coder runs with `--repo` as its
-working directory and **cannot read outside it** otherwise. The spec's and plan's
-directories are added automatically; add any reference codebase yourself:
+`--allow-dir` importa más de lo que parece: el coder se ejecuta con `--repo` como
+directorio de trabajo y **no puede leer fuera de él** sin esto. Los directorios de la
+especificación y del plan se añaden automáticamente; cualquier código de referencia lo
+añades tú:
 
 ```bash
 mae --repo ~/code/myproject --allow-dir ~/code/reference-lib
@@ -209,9 +288,9 @@ mae --repo ~/code/myproject --allow-dir ~/code/reference-lib
 
 ---
 
-## Per-repo settings — `.mae/config.json`
+## Ajustes por repo — `.mae/config.json`
 
-Optional. Saves typing flags on every run. CLI flags override it.
+Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen prioridad.
 
 ```json
 {
@@ -228,103 +307,106 @@ Optional. Saves typing flags on every run. CLI flags override it.
 }
 ```
 
-- `spec` / `plan` — resolved against the repo; set only to move them out of `.mae/`.
-- `gates` — run in order. An entry is a command string (exit 0 = pass), or
-  `{"cmd", "ok_codes"}` when other exit codes also count as a pass. `[]` = no gates.
-  Omitted = pytest then ruff.
-- `agents` — roles are `coder`, `reviewer`, `auditor`; CLIs are `claude`, `codex`.
+- `spec` / `plan` — relativos al repo; ponlos solo para sacarlos de `.mae/`.
+- `gates` — se ejecutan en orden. Cada entrada es un comando (código de salida 0 = pasa),
+  o `{"cmd", "ok_codes"}` cuando otros códigos también cuentan como pasar. `[]` = sin
+  gates. Si se omite = pytest y luego ruff.
+- `agents` — los roles son `coder`, `reviewer`, `auditor`; las CLIs son `claude`, `codex`.
 
-A gate passed with `--gate` only accepts exit 0. pytest exits 5 when it collects no
-tests, so for a repo without tests yet use the config form
-`{"cmd": "pytest -q --tb=line", "ok_codes": [0, 5]}` (the default gates already do this).
+Un gate pasado con `--gate` solo acepta el código de salida 0. pytest sale con 5 cuando
+no encuentra tests, así que en un repo todavía sin tests usa la forma del config
+`{"cmd": "pytest -q --tb=line", "ok_codes": [0, 5]}` (los gates por defecto ya lo hacen).
 
 ---
 
-## The loop
+## El bucle
 
 ```
                    ┌──────────────────────────────────────────┐
                    ↓                                          │
- spec + queue → CODER → TESTER → tests pass? ── no → REVIEWER ─┘
+ spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER ─┘
                                      │
-                                     yes
+                                     sí
                                      ↓
-                              queue has open items? ── yes → CODER
+                            ¿quedan elementos abiertos? ── sí → CODER
                                      │
                                      no
                                      ↓
-                              already audited? ── no → AUDITOR ── findings? ── yes → CODER
+                              ¿ya auditado? ── no → AUDITOR ── ¿hallazgos? ── sí → CODER
                                      │                                  │
-                                     yes                                no
+                                     sí                                 no
                                      ↓                                  ↓
-                                    END ←───────────────────────────────┘
+                                    FIN ←───────────────────────────────┘
 ```
 
-Every edge back to the coder stops at `--max-iterations`. It is a ceiling, not a
-target — the loop exits as soon as nothing is open.
+Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
+bucle termina en cuanto no queda nada abierto.
 
-**CODER** (`claude`, can edit files, 90 min budget) — implements open items and
-flips each line to `DONE` as its code lands, so a killed session loses nothing. It
-does not run the tests. It is the only node that writes.
+**CODER** (`claude`, puede editar archivos, 90 min de presupuesto) — implementa los
+elementos abiertos y pasa cada línea a `DONE` en cuanto su código está escrito, así una
+sesión interrumpida no pierde nada. No ejecuta los tests. Es el único nodo que escribe.
 
-**TESTER** (no LLM, free) — runs the gates in order and turns their output into
-structured errors, capped at 20:
+**TESTER** (sin LLM, gratis) — ejecuta los gates en orden y convierte su salida en
+errores estructurados, con un máximo de 20:
 
 ```json
 [{"file": "app/auth/login.py", "line": 84, "description": "assert 0 == 2"}]
 ```
 
-Parsing tries ruff/eslint JSON, then `path:line[:col]: message` (pytest `--tb=line`,
-ruff, mypy, tsc, eslint compact, `go vet`, gcc), then the last 800 characters of raw
-output. An unknown tool degrades to a blunt error; it never breaks the loop. A tool
-that isn't installed is skipped. It **commits after every pass**, red ones included.
+El parseo prueba primero JSON de ruff/eslint, luego `ruta:línea[:col]: mensaje` (pytest
+`--tb=line`, ruff, mypy, tsc, eslint compact, `go vet`, gcc) y por último los 800 últimos
+caracteres de la salida en bruto. Una herramienta desconocida da un error poco preciso,
+pero nunca rompe el bucle. Una herramienta no instalada se omite. **Hace commit después
+de cada pasada**, también de las que fallan.
 
-**REVIEWER** (`codex`, read-only) — runs **only on a red build**. Sees the spec,
-the queue, the errors and the diff of the pass that just failed; returns root causes
-as JSON:
+**REVIEWER** (`codex`, solo lectura) — se ejecuta **solo cuando el build falla**. Ve la
+especificación, la cola, los errores y el diff de la pasada que acaba de fallar; devuelve
+las causas raíz en JSON:
 
 ```json
-{"problems": [{"file": "...", "line": 84, "description": "why it fails",
-               "suggested_fix": "what to change"}]}
+{"problems": [{"file": "...", "line": 84, "description": "por qué falla",
+               "suggested_fix": "qué cambiar"}]}
 ```
 
-**AUDITOR** (`codex`, read-only) — runs **once per run**, when tests pass and the
-queue is closed. The coder marked its own homework, so the auditor reads the diff of
-the whole run against the spec and reports units marked `DONE` that are stubbed,
-contradict the spec, or have no test for required behaviour. Scoped to the units that
-were open when the run started, so one small addition doesn't re-audit everything.
-Findings go back to the coder.
+**AUDITOR** (`codex`, solo lectura) — se ejecuta **una vez por ejecución**, cuando los
+tests pasan y la cola está cerrada. El coder se corrige a sí mismo, así que el auditor
+lee el diff de toda la ejecución contra la especificación y reporta unidades marcadas
+`DONE` que están a medias, contradicen la especificación o no tienen test para un
+comportamiento requerido. Se limita a las unidades que estaban abiertas al empezar la
+ejecución, así que una adición pequeña no vuelve a auditarlo todo. Los hallazgos vuelven
+al coder.
 
-Diffs sent to the reviewer and auditor are capped at 20 000 characters, `--stat` first.
+Los diffs enviados al revisor y al auditor se limitan a 20 000 caracteres, con `--stat`
+primero.
 
 ---
 
-## Roles, CLIs and prompts
+## Roles, CLIs y prompts
 
-Which CLI fills a role is configuration:
+Qué CLI cumple cada rol es configuración:
 
 ```bash
-mae --agent reviewer=claude --agent auditor=claude    # claude only, no codex needed
+mae --agent reviewer=claude --agent auditor=claude    # solo claude, sin necesidad de codex
 ```
 
-Every runner takes the same arguments (`write`, `add_dirs`, `schema`, `timeout`), so
-adding a third CLI is one function plus one entry in `RUNNERS` in `engine/cli.py`.
-Two caveats the engine warns about: `codex` has no `--add-dir`, and `claude` has no
-output schema, so it is asked for JSON in the prompt instead.
+Todas las funciones que lanzan una CLI aceptan los mismos argumentos (`write`,
+`add_dirs`, `schema`, `timeout`), así que añadir una tercera CLI es una función más una
+entrada en `RUNNERS` en `engine/cli.py`. Dos limitaciones de las que el motor avisa:
+`codex` no tiene `--add-dir`, y `claude` no tiene esquema de salida, así que se le pide
+JSON en el prompt.
 
-The prompts are files: `engine/prompts/{coder,reviewer,auditor}.md`. To change one
-for a single project, copy it to `<repo>/.mae/prompts/<role>.md` and edit — the
-engine prints when it uses an override. Placeholders are `{name}`; an unknown one
-fails at startup with the list of available names; a literal brace must be doubled
-`{{ }}`.
+Los prompts son archivos: `engine/prompts/{coder,reviewer,auditor}.md`. Para cambiar uno
+en un solo proyecto, cópialo a `<repo>/.mae/prompts/<rol>.md` y edítalo — el motor avisa
+cuando usa uno personalizado. Los marcadores son `{nombre}`; uno desconocido falla al
+arrancar con la lista de nombres disponibles; una llave literal debe duplicarse `{{ }}`.
 
 ---
 
 ## Checkpoints
 
-Before the first pass the engine branches in the target repo and commits any
-uncommitted work as a baseline, so nothing of yours is lost or mixed into the
-agent's diffs:
+Antes de la primera pasada el motor crea una rama en el repo objetivo y hace commit de
+tu trabajo sin commitear como punto de partida, así nada tuyo se pierde ni se mezcla con
+los diffs del agente:
 
 ```
 [git] working on branch engine/20260913-101500
@@ -333,111 +415,115 @@ agent's diffs:
 ```
 
 ```bash
-git -C <repo> diff HEAD~1          # what the last pass did
-git -C <repo> reset --hard <sha>   # undo back to any pass
+git -C <repo> diff HEAD~1          # lo que hizo la última pasada
+git -C <repo> reset --hard <sha>   # volver a cualquier pasada
 ```
 
-Not a git repo? The run still works, unprotected, and says so. `--no-git` opts out.
+¿No es un repo git? La ejecución funciona igual, sin protección, y lo avisa. `--no-git`
+lo desactiva a propósito.
 
 ---
 
-## The run log
+## El log de ejecución
 
-One JSONL file per run under `<repo>/.mae/runs/`:
+Un archivo JSONL por ejecución en `<repo>/.mae/runs/`:
 
 ```bash
-tail -f <repo>/.mae/runs/*.jsonl                                                      # live
+tail -f <repo>/.mae/runs/*.jsonl                                                      # en vivo
 jq -r 'select(.event=="agent") | "\(.label) \(.seconds)s $\(.cost_usd)"' <repo>/.mae/runs/*.jsonl
 jq 'select(.event=="finish") | .usage' <repo>/.mae/runs/*.jsonl
 ```
 
-Events: `start`, `agent` (per CLI call: seconds, tokens, cost), `gate`, `checkpoint`,
-`limit` (rate-limit sleeps), `finish` / `aborted`. A killed run still writes
-`aborted` and keeps its checkpoints.
+Eventos: `start`, `agent` (por llamada a la CLI: segundos, tokens, coste), `gate`,
+`checkpoint`, `limit` (esperas por límite de uso), `finish` / `aborted`. Una ejecución
+interrumpida igualmente escribe `aborted` y conserva sus checkpoints.
 
 ---
 
-## Cost and limits
+## Coste y límites
 
-The coder prompt puts stable content first (spec + instructions, cached at ~10%) and
-volatile content last (queue + findings, full price). Confirm the cache is working
-from the progress line — a high `cache_read` is what you want:
+El prompt del coder pone primero el contenido estable (especificación + instrucciones,
+cacheado a ~10%) y al final el variable (cola + hallazgos, precio completo). Comprueba
+que la caché funciona en la línea de progreso — un `cache_read` alto es lo que buscas:
 
 ```
 [coder] done — in=1204 cache_read=2610 out=880 cost=$0.0431
 ```
 
-Only agents' final answers enter the graph state, never their transcripts; the
-tester costs nothing; the reviewer runs only on failure and the auditor only once.
+Solo las respuestas finales de los agentes entran en el estado del grafo, nunca sus
+transcripciones; el tester no cuesta nada; el revisor solo se ejecuta cuando algo falla
+y el auditor solo una vez.
 
-If a CLI dies on a usage or rate limit, the engine sleeps until the reset time in
-its output (30 min if none), up to 4 times per call:
+Si una CLI se detiene por un límite de uso, el motor espera hasta la hora de reinicio
+que aparece en su salida (30 min si no hay ninguna), hasta 4 veces por llamada:
 
 ```
 [coder] limit reached — sleeping 47 min, resuming ~15:32
 ```
 
-Waits over 6 hours are refused with the reset date — a session limit is worth
-waiting out, a monthly cap is not. Ctrl-C kills the agent's whole process group, and
-the next run resumes from the status block.
+Las esperas de más de 6 horas se rechazan indicando la fecha de reinicio — vale la pena
+esperar un límite de sesión, no un tope mensual. Ctrl-C mata todo el grupo de procesos
+del agente, y la siguiente ejecución continúa desde el bloque de estado.
 
 ---
 
-## Troubleshooting
+## Solución de problemas
 
-| Symptom | Cause and fix |
+Los mensajes del motor están en inglés; aquí aparecen tal cual para que puedas buscarlos.
+
+| Síntoma | Causa y solución |
 |---|---|
-| `spec file not found: <repo>/.mae/spec.md` | Create it, or point `--spec` / `"spec"` at yours. The `plan` version of this error prints a starter block to paste. |
-| `has nothing left open — every item is DONE or BLOCKED` | Working as intended. Add a `TODO` line or reopen one. |
-| `WARNING: unreadable status line, it will be ignored` | An invented state (`PENDING`) or a missing colon. Fix the line. |
-| You wrote a new section but nothing runs | Prose is invisible to routing. Add a `<name>: TODO` line inside the block. |
-| `unknown CLI 'x' for coder` / `unknown role` | Typo in `--agent` or `"agents"`. Roles: coder, reviewer, auditor. CLIs: claude, codex. |
-| `another run already holds <plan>` | A run is still going on that plan. Wait, or kill it. |
-| Lint passes on everything | `ruff` from **snap** can't write its cache under `/tmp` and returns `[]` with exit 0. `snap remove ruff && pip install ruff`, or keep the target repo under `$HOME`. |
-| `codex ... failed to refresh available models` | Harmless; the engine hides the 325 KB log line. `npm i -g @openai/codex@latest` fixes it. |
-| The coder didn't update the plan | It couldn't reach the file. Spec/plan directories are allowed automatically; anything else needs `--allow-dir`. |
-| Loop ends with units still open | Hit `--max-iterations`. Raise it above the number of open units and re-run — it resumes. |
+| `spec file not found: <repo>/.mae/spec.md` | Créalo, o apunta `--spec` / `"spec"` al tuyo. La versión `plan` de este error imprime un bloque inicial para copiar. |
+| `has nothing left open — every item is DONE or BLOCKED` | Funciona como debe. Añade una línea `TODO` o reabre una. |
+| `WARNING: unreadable status line, it will be ignored` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
+| Escribiste una sección nueva pero no se ejecuta nada | La prosa no participa en el enrutamiento. Añade una línea `<nombre>: TODO` dentro del bloque. |
+| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. CLIs: claude, codex. |
+| `another run already holds <plan>` | Hay otra ejecución sobre ese plan. Espera o termínala. |
+| El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
+| `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
+| El coder no actualizó el plan | No podía acceder al archivo. Los directorios de spec y plan se permiten automáticamente; cualquier otro necesita `--allow-dir`. |
+| El bucle termina con unidades abiertas | Llegó a `--max-iterations`. Súbelo por encima del número de unidades abiertas y vuelve a ejecutar — continúa donde lo dejó. |
 
 ---
 
-## Hygiene
+## Buenas prácticas
 
-- Commit `<repo>/.mae/` with its project; gitignore `.mae/runs/`.
-- The status block is the only state between runs; if an agent mangles it, `git diff`
-  shows you.
-- Delete old run branches once merged or discarded:
+- Haz commit de `<repo>/.mae/` junto con su proyecto; añade `.mae/runs/` al `.gitignore`.
+- El bloque de estado es el único estado que sobrevive entre ejecuciones; si un agente lo
+  estropea, `git diff` te lo muestra.
+- Borra las ramas de ejecuciones antiguas una vez fusionadas o descartadas:
   `git -C <repo> branch -D $(git -C <repo> branch --list 'engine/*')`.
 
 ---
 
-## Working on the engine itself
+## Trabajar en el propio motor
 
 ```
 MultiAgentEngine/
-├── pyproject.toml       deps, and the `mae` entry point
-├── conftest.py          puts the project root on sys.path for pytest
+├── pyproject.toml       dependencias y el comando `mae`
+├── conftest.py          añade la raíz del proyecto a sys.path para pytest
 ├── engine/
-│   ├── main.py          CLI parsing, config, validation, run lock, run()
-│   ├── graph.py         status-block parsing, routing, LangGraph wiring
+│   ├── main.py          parseo de la CLI, config, validación, bloqueo del plan, run()
+│   ├── graph.py         parseo del bloque de estado, enrutamiento, grafo de LangGraph
 │   ├── state.py         GraphState
-│   ├── cli.py           claude/codex runners (RUNNERS), rate-limit sleeps
-│   ├── git.py           per-run branch, checkpoints, diffs
-│   ├── prompts.py       prompt loading with per-repo override
+│   ├── cli.py           funciones para claude/codex (RUNNERS), esperas por límite de uso
+│   ├── git.py           rama por ejecución, checkpoints, diffs
+│   ├── prompts.py       carga de prompts con personalización por repo
 │   ├── prompts/         coder.md, reviewer.md, auditor.md
-│   ├── runlog.py        JSONL run log, cost and token totals
+│   ├── runlog.py        log JSONL, totales de coste y tokens
 │   └── nodes/
-│       ├── coder.py     implementation agent
-│       ├── tester.py    deterministic gates and output parsing
-│       └── reviewer.py  reviewer and auditor (shared schema)
+│       ├── coder.py     agente de implementación
+│       ├── tester.py    gates deterministas y parseo de su salida
+│       └── reviewer.py  revisor y auditor (esquema compartido)
 └── tests/
-    ├── test_engine.py   plan parsing, routing, output parsing, run log
-    ├── test_modular.py  role→CLI, prompts, documents, gates, diffs, config
-    └── test_ops.py      checkpoints, run lock
+    ├── test_engine.py   parseo del plan, enrutamiento, parseo de salidas, log
+    ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
+    └── test_ops.py      checkpoints, bloqueo del plan
 ```
 
 ```bash
 python3 -m pytest -q && ruff check .
 ```
 
-Nothing under `engine/` is project-specific. If you find yourself editing it to point
-at a project, that belongs in the target repo's `.mae/` instead.
+Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
+apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.

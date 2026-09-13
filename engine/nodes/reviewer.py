@@ -52,7 +52,7 @@ def _focus(state: GraphState) -> str:
     """Scope the audit to the units open when the run started."""
     names = state.get("focus") or []
     if not names:
-        return "SCOPE: every unit in the status block — nothing was open when this run started."
+        return "SCOPE: every unit in the status block — this run started without a task list and wrote it."
     listed = "\n".join(f"- {n}" for n in names)
     return (
         "SCOPE: only the units below. They are the ones this run implemented or changed;\n"
