@@ -1,4 +1,4 @@
-"""Two read-only passes with one output shape: reviewer (red build) and auditor (once, on green)."""
+"""Two read-only passes with one output shape: reviewer (red build) and auditor (green + closed queue, until clean)."""
 import json
 import re
 from pathlib import Path
@@ -15,12 +15,13 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "unit": {"type": "string"},  # status-block name the finding belongs to; "" if none
                     "file": {"type": "string"},
                     "line": {"type": "integer"},
                     "description": {"type": "string"},
                     "suggested_fix": {"type": "string"},
                 },
-                "required": ["file", "line", "description", "suggested_fix"],
+                "required": ["unit", "file", "line", "description", "suggested_fix"],
                 "additionalProperties": False,
             },
         }
@@ -84,4 +85,4 @@ def auditor_node(state: GraphState) -> dict:
     raw = run_agent(state["agents"]["auditor"], prompt, cwd=state["repo"], label="auditor", schema=SCHEMA)
     problems = _parse_problems(raw)
     print(f"[auditor] {len(problems)} problem(s) against the plan", flush=True)
-    return {"problems": problems, "audited": True}
+    return {"problems": problems, "audit_clean": not problems}

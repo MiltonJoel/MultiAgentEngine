@@ -244,6 +244,8 @@ Reglas importantes:
 - El orden no importa — el bloque es un índice, no una secuencia.
 - Una línea que no se puede interpretar **se avisa al arrancar, no se descarta en silencio**.
 - Borrar `<!-- ENGINE-STATUS` o `-->` borra la memoria del motor sobre lo que está hecho.
+- Una línea `TODO — audit: …` la reabrió el auditor; la nota describe el problema. No la
+  pases a `DONE` a mano sin arreglarlo: la siguiente auditoría la volvería a reabrir.
 
 ### Añadir y cambiar trabajo
 
@@ -322,29 +324,31 @@ no encuentra tests, así que en un repo todavía sin tests usa la forma del conf
 ## El bucle
 
 ```
-                   ┌──────────────────────────────────────────┐
-                   ↓                                          │
- spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER ─┘
+ spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER → CODER
                                      │
                                      sí
                                      ↓
-                            ¿quedan elementos abiertos? ── sí → CODER
+                     ¿quedan elementos abiertos? ── sí → CODER
                                      │
                                      no
                                      ↓
-                              ¿ya auditado? ── no → AUDITOR ── ¿hallazgos? ── sí → CODER
-                                     │                                  │
-                                     sí                                 no
-                                     ↓                                  ↓
-                                    FIN ←───────────────────────────────┘
+                      ¿última auditoría limpia? ── sí → FIN
+                                     │
+                                     no
+                                     ↓
+                                  AUDITOR ── ¿hallazgos? ── no → FIN
+                                                  │
+                                                  sí → reabre esas unidades (TODO) → CODER
 ```
 
 Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
-bucle termina en cuanto no queda nada abierto.
+bucle termina en cuanto no queda nada abierto y la auditoría sale limpia.
 
 **CODER** (`claude`, puede editar archivos, 90 min de presupuesto) — implementa los
-elementos abiertos y pasa cada línea a `DONE` en cuanto su código está escrito, así una
-sesión interrumpida no pierde nada. No ejecuta los tests. Es el único nodo que escribe.
+elementos abiertos, escribe tests para cada uno y ejecuta solo esos tests; pasa la línea a
+`DONE` cuando pasan, así una sesión interrumpida no pierde nada. Lo que necesita datos,
+red, credenciales o una decisión humana va a `BLOCKED` con el motivo, nunca a `DONE`. La
+suite completa la ejecuta el TESTER. Es el único agente que escribe código.
 
 **TESTER** (sin LLM, gratis) — ejecuta los gates en orden y convierte su salida en
 errores estructurados, con un máximo de 20:
@@ -368,13 +372,17 @@ las causas raíz en JSON:
                "suggested_fix": "qué cambiar"}]}
 ```
 
-**AUDITOR** (`codex`, solo lectura) — se ejecuta **una vez por ejecución**, cuando los
-tests pasan y la cola está cerrada. El coder se corrige a sí mismo, así que el auditor
-lee el diff de toda la ejecución contra la especificación y reporta unidades marcadas
-`DONE` que están a medias, contradicen la especificación o no tienen test para un
-comportamiento requerido. Se limita a las unidades que estaban abiertas al empezar la
-ejecución, así que una adición pequeña no vuelve a auditarlo todo. Los hallazgos vuelven
-al coder.
+**AUDITOR** (`codex`, solo lectura) — se ejecuta cuando los tests pasan y la cola está
+cerrada. El coder se corrige a sí mismo, así que el auditor lee el diff de toda la
+ejecución contra la especificación y reporta unidades marcadas `DONE` que están a medias,
+contradicen la especificación, no tienen test para un comportamiento requerido o afirman
+un criterio de salida imposible de cumplir sin datos. Se limita a las unidades que estaban
+abiertas al empezar la ejecución.
+
+Cada hallazgo indica su unidad, y **el motor la reabre**: la línea pasa a
+`TODO — audit: <hallazgo>`. El coder la arregla, los tests vuelven a pasar y **la
+auditoría se repite** hasta salir limpia. Solo una auditoría sin hallazgos termina la
+ejecución. Las unidades `BLOCKED` no se reabren.
 
 Los diffs enviados al revisor y al auditor se limitan a 20 000 caracteres, con `--stat`
 primero.
@@ -452,7 +460,7 @@ que la caché funciona en la línea de progreso — un `cache_read` alto es lo q
 
 Solo las respuestas finales de los agentes entran en el estado del grafo, nunca sus
 transcripciones; el tester no cuesta nada; el revisor solo se ejecuta cuando algo falla
-y el auditor solo una vez.
+y el auditor solo con la cola cerrada (repitiéndose hasta salir limpio).
 
 Si una CLI se detiene por un límite de uso, el motor espera hasta la hora de reinicio
 que aparece en su salida (30 min si no hay ninguna), hasta 4 veces por llamada:
@@ -483,6 +491,8 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 | `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
 | El coder no actualizó el plan | No podía acceder al archivo. Los directorios de spec y plan se permiten automáticamente; cualquier otro necesita `--allow-dir`. |
 | El bucle termina con unidades abiertas | Llegó a `--max-iterations`. Súbelo por encima del número de unidades abiertas y vuelve a ejecutar — continúa donde lo dejó. |
+| `[auditor] reopened: …` | El auditor encontró problemas en unidades `DONE`; el motor las volvió a `TODO` con el hallazgo como nota. Es lo esperado: el coder las arregla y se audita otra vez. |
+| Termina en el tope con `audit_clean=False` | El auditor sigue encontrando problemas. Lee las notas `audit:` del plan y los `problems` impresos al final; corrige la especificación si pide algo imposible, o marca la unidad `BLOCKED`. |
 
 ---
 

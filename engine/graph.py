@@ -4,6 +4,7 @@ from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 
+from engine import runlog
 from engine.nodes.coder import coder_node
 from engine.nodes.reviewer import auditor_node, reviewer_node
 from engine.nodes.tester import tester_node
@@ -18,6 +19,7 @@ STATUS_LINE = re.compile(
 OPEN_STATES = {"TODO", "IN_PROGRESS"}
 # Ceiling on coder passes, not a target; must exceed the number of units in the plan.
 MAX_ITERATIONS = 15
+MAX_NOTE_CHARS = 160
 
 
 def plan_items(plan_path: str) -> list[tuple[str, str]]:
@@ -52,19 +54,56 @@ def plan_done(plan_path: str) -> bool:
     return bool(states) and not any(s in OPEN_STATES for s in states)
 
 
+def reopen_units(plan_path: str, problems: list[dict]) -> list[str]:
+    """Flip each DONE unit named by a finding back to `TODO — audit: <finding>`; returns the names reopened.
+    BLOCKED units stay blocked, and a unit name that matches no line is ignored."""
+    notes = {}
+    for problem in problems:
+        unit = str(problem.get("unit") or "").strip().casefold()
+        if unit and unit not in notes:  # first finding becomes the note; the coder sees all of them
+            text = " ".join(str(problem.get("description", "")).split())
+            notes[unit] = text.replace("-->", "→")[:MAX_NOTE_CHARS]  # "-->" would close the block
+    text = Path(plan_path).read_text()
+    block = STATUS_BLOCK.search(text)
+    if not block or not notes:
+        return []
+    reopened, lines = [], []
+    for line in block.group("body").split("\n"):
+        match = STATUS_LINE.match(line)
+        if match and match.group("state") == "DONE" and match.group("name").strip().casefold() in notes:
+            name = match.group("name").strip()
+            line = f"{name}: TODO — audit: {notes[name.casefold()]}"
+            reopened.append(name)
+        lines.append(line)
+    if reopened:
+        start, end = block.span("body")
+        Path(plan_path).write_text(text[:start] + "\n".join(lines) + text[end:])
+    return reopened
+
+
+def audit_node(state: GraphState) -> dict:
+    """Run the auditor, then reopen every DONE unit it found a problem in."""
+    update = auditor_node(state)
+    reopened = reopen_units(state["plan"], update["problems"])
+    if reopened:
+        print(f"[auditor] reopened: {', '.join(reopened)}", flush=True)
+        runlog.log("reopen", units=reopened)
+    return update
+
+
 def _capped(state: GraphState) -> bool:
     return state["iteration"] >= state["max_iterations"]
 
 
 def after_tests(state: GraphState) -> str:
-    """Red -> reviewer. Green + open items -> coder. Green + finished -> one audit, then end."""
+    """Red -> reviewer. Green + open items -> coder. Green + finished -> audit until it comes back clean."""
     if _capped(state):
         return END
     if not state["tests_passed"]:
         return "reviewer"
     if not plan_done(state["plan"]):
         return "coder"
-    return END if state.get("audited") else "auditor"
+    return END if state.get("audit_clean") else "auditor"
 
 
 def after_review(state: GraphState) -> str:
@@ -72,7 +111,7 @@ def after_review(state: GraphState) -> str:
 
 
 def after_audit(state: GraphState) -> str:
-    """Findings go back to the coder; a clean audit ends the run."""
+    """Findings go back to the coder and the audit reruns after the fix; a clean audit ends the run."""
     return "coder" if state["problems"] and not _capped(state) else END
 
 
@@ -81,7 +120,7 @@ def build_graph():
     graph.add_node("coder", coder_node)
     graph.add_node("tester", tester_node)
     graph.add_node("reviewer", reviewer_node)
-    graph.add_node("auditor", auditor_node)
+    graph.add_node("auditor", audit_node)
 
     # Evaluator-optimizer: the coder generates, the tester/reviewer/auditor judge and loop back.
     graph.add_edge(START, "coder")

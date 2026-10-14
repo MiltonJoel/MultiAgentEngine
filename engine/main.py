@@ -183,7 +183,7 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
             "errors": [],
             "problems": [],
             "tests_passed": False,
-            "audited": False,
+            "audit_clean": False,
             "focus": focus,
             "iteration": 0,
             "max_iterations": max_iterations,
@@ -194,10 +194,10 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
         raise
 
     runlog.log("finish", iterations=result["iteration"], tests_passed=result["tests_passed"],
-               audited=result["audited"], errors=result["errors"], problems=result["problems"],
+               audit_clean=result["audit_clean"], errors=result["errors"], problems=result["problems"],
                usage=runlog.totals())
     print(f"\nFinished after {result['iteration']} iteration(s), "
-          f"tests_passed={result['tests_passed']}, audited={result['audited']}\nPlan: {_tally(str(plan))}")
+          f"tests_passed={result['tests_passed']}, audit_clean={result['audit_clean']}\nPlan: {_tally(str(plan))}")
     print(f"Usage: {runlog.summary()}")
     if branch and base_sha:
         print(f"Review with: git -C {repo} log --oneline {base_sha[:7]}..{branch}")
