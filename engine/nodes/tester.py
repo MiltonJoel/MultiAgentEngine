@@ -32,7 +32,7 @@ def _run(cmd: list[str], cwd: str) -> tuple[int | None, str, str]:
     """(exit code, stdout, stderr); code None if the tool isn't installed. Streams kept apart for JSON tools."""
     print(f"$ {' '.join(cmd)}", flush=True)
     try:
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900, check=False)
+        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf8", errors="replace", timeout=900, check=False)
         return result.returncode, result.stdout, result.stderr
     except FileNotFoundError:
         print(f"({cmd[0]} not installed, skipped)", flush=True)

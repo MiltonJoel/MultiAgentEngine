@@ -14,17 +14,19 @@ from engine.state import GraphState
 STATUS_BLOCK = re.compile(r"<!--\s*ENGINE-STATUS\s*(?P<body>.*?)-->", re.DOTALL)
 # `<name>: <STATE> [free-form note]` — the name may itself contain colons and dashes.
 STATUS_LINE = re.compile(
-    r"^\s*(?P<name>\S.*?):\s*(?P<state>TODO|IN_PROGRESS|DONE|BLOCKED)\b.*$", re.MULTILINE
+    r"^\s*(?P<name>\S.*?):\s*(?P<state>TODO|IN_PROGRESS|DONE|BLOCKED)\b(?P<note>.*)$", re.MULTILINE
 )
 OPEN_STATES = {"TODO", "IN_PROGRESS"}
 # Ceiling on coder passes, not a target; must exceed the number of units in the plan.
 MAX_ITERATIONS = 15
 MAX_NOTE_CHARS = 160
+# Consecutive coder passes that changed nothing before the run gives up instead of paying for more.
+IDLE_LIMIT = 2
 
 
 def plan_items(plan_path: str) -> list[tuple[str, str]]:
     """(name, state) per line of the status block; [] if not written yet."""
-    block = STATUS_BLOCK.search(Path(plan_path).read_text())
+    block = STATUS_BLOCK.search(Path(plan_path).read_text(encoding="utf8", errors="replace"))
     if not block:
         return []
     return [(m.group("name").strip(), m.group("state")) for m in STATUS_LINE.finditer(block.group("body"))]
@@ -41,7 +43,7 @@ def plan_open(plan_path: str) -> list[str]:
 
 def plan_unparsed(plan_path: str) -> list[str]:
     """Lines inside the block the engine cannot read (a typo'd state would silently drop a unit)."""
-    block = STATUS_BLOCK.search(Path(plan_path).read_text())
+    block = STATUS_BLOCK.search(Path(plan_path).read_text(encoding="utf8", errors="replace"))
     if not block:
         return []
     return [line.strip() for line in block.group("body").splitlines()
@@ -63,7 +65,7 @@ def reopen_units(plan_path: str, problems: list[dict]) -> list[str]:
         if unit and unit not in notes:  # first finding becomes the note; the coder sees all of them
             text = " ".join(str(problem.get("description", "")).split())
             notes[unit] = text.replace("-->", "→")[:MAX_NOTE_CHARS]  # "-->" would close the block
-    text = Path(plan_path).read_text()
+    text = Path(plan_path).read_text(encoding="utf8", errors="replace")
     block = STATUS_BLOCK.search(text)
     if not block or not notes:
         return []
@@ -77,7 +79,7 @@ def reopen_units(plan_path: str, problems: list[dict]) -> list[str]:
         lines.append(line)
     if reopened:
         start, end = block.span("body")
-        Path(plan_path).write_text(text[:start] + "\n".join(lines) + text[end:])
+        Path(plan_path).write_text(text[:start] + "\n".join(lines) + text[end:], encoding="utf8")
     return reopened
 
 
@@ -98,6 +100,10 @@ def _capped(state: GraphState) -> bool:
 def after_tests(state: GraphState) -> str:
     """Red -> reviewer. Green + open items -> coder. Green + finished -> audit until it comes back clean."""
     if _capped(state):
+        return END
+    if state.get("idle_passes", 0) >= IDLE_LIMIT:
+        print(f"[engine] {IDLE_LIMIT} coder passes in a row changed nothing — stopping", flush=True)
+        runlog.log("stalled", idle_passes=state["idle_passes"])
         return END
     if not state["tests_passed"]:
         return "reviewer"

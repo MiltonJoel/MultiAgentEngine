@@ -7,7 +7,18 @@ import pytest
 
 from engine import git, prompts
 from engine.cli import DEFAULT_AGENTS, RUNNERS, run_agent
-from engine.main import DEFAULT_PLAN, DEFAULT_SPEC, MAE_DIR, _agents, _doc, _repo_config, build_parser
+from engine.graph import MAX_ITERATIONS
+from engine.main import (
+    DEFAULT_PLAN,
+    DEFAULT_SPEC,
+    MAE_DIR,
+    _agents,
+    _check_gates,
+    _doc,
+    _max_iterations,
+    _repo_config,
+    build_parser,
+)
 from engine.nodes.reviewer import NO_DIFF, _diff
 from engine.nodes.tester import DEFAULT_GATES, build_gates
 
@@ -36,7 +47,8 @@ def test_every_role_has_a_runner_and_a_prompt():
         assert prompts.path(role).is_file(), role
 
 
-def test_agents_resolve_from_config_then_flags():
+def test_agents_resolve_from_config_then_flags(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     parser = build_parser()
     assert _agents(parser, {}, []) == DEFAULT_AGENTS
     assert _agents(parser, {"reviewer": "claude"}, ["coder=codex"]) == {
@@ -145,6 +157,29 @@ def test_repo_config_is_optional_and_loud_when_broken():
         (repo / MAE_DIR).mkdir()
         (repo / MAE_DIR / "config.json").write_text('{"max_iterations": 9}')
         assert _repo_config(repo) == {"max_iterations": 9}
-        (repo / MAE_DIR / "config.json").write_text("{not json")
+        for broken in ("{not json", "[1, 2]", '{"agents": "claude"}', '{"allow_dirs": "~/x"}'):
+            (repo / MAE_DIR / "config.json").write_text(broken)
+            with pytest.raises(SystemExit):
+                _repo_config(repo)
+
+
+def test_a_missing_cli_or_gate_tool_fails_before_the_run(monkeypatch):
+    parser = build_parser()
+    monkeypatch.setattr("shutil.which", lambda name: None if name in ("codex", "ruff", "npm") else f"/usr/bin/{name}")
+    with pytest.raises(SystemExit):
+        _agents(parser, {}, [])  # default reviewer is codex
+    assert _agents(parser, {}, ["reviewer=claude", "auditor=claude"])["reviewer"] == "claude"
+    # a default gate whose tool is missing is dropped; a configured one is an error, not a silent pass
+    assert [g["cmd"][0] for g in _check_gates(parser, build_gates(None), False)] == ["pytest"]
+    with pytest.raises(SystemExit):
+        _check_gates(parser, build_gates(["npm test"]), True)
+
+
+def test_max_iterations_must_be_a_positive_integer():
+    parser = build_parser()
+    assert _max_iterations(parser, None, None) == MAX_ITERATIONS
+    assert _max_iterations(parser, 3, 9) == 3
+    assert _max_iterations(parser, None, 9) == 9
+    for bad in ((0, None), (-2, None), (None, "20"), (None, True)):
         with pytest.raises(SystemExit):
-            _repo_config(repo)
+            _max_iterations(parser, *bad)

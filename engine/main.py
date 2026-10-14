@@ -2,12 +2,22 @@
 import argparse
 import fcntl
 import json
+import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
 from engine import git, runlog
 from engine.cli import DEFAULT_AGENTS, RUNNERS
-from engine.graph import MAX_ITERATIONS, build_graph, plan_done, plan_open, plan_states, plan_unparsed
+from engine.graph import (
+    IDLE_LIMIT,
+    MAX_ITERATIONS,
+    build_graph,
+    plan_done,
+    plan_open,
+    plan_states,
+    plan_unparsed,
+)
 from engine.nodes.tester import build_gates
 
 # Everything project-specific lives in <repo>/.mae/, never in this package.
@@ -35,9 +45,14 @@ def _repo_config(repo: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf8"))
     except ValueError as exc:
         raise SystemExit(f"{path}: {exc}")
+    if not isinstance(config, dict):
+        raise SystemExit(f"{path}: must hold a JSON object")
+    for key, kind in (("agents", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str)):
+        if key in config and not isinstance(config[key], kind):
+            raise SystemExit(f"{path}: \"{key}\" must be a {kind.__name__}")
     print(f"Config: {path}")
     return config
 
@@ -69,7 +84,34 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str]) -> 
             parser.error(f"unknown role {role!r} — known: {', '.join(DEFAULT_AGENTS)}")
         if cli not in RUNNERS:
             parser.error(f"unknown CLI {cli!r} for {role} — known: {', '.join(sorted(RUNNERS))}")
+    for cli in set(agents.values()):
+        if not shutil.which(cli):
+            parser.error(f"the {cli} CLI is not on PATH — install and log in, or bind its roles elsewhere "
+                         f"with --agent ROLE=CLI")
     return agents
+
+
+def _check_gates(parser: argparse.ArgumentParser, gates: list[dict], configured: bool) -> list[dict]:
+    """A configured gate whose tool is missing would pass silently, so it fails now; a missing default is dropped."""
+    kept = []
+    for gate in gates:
+        found = shutil.which(gate["cmd"][0])
+        if not found and configured:
+            parser.error(f"gate tool not found: {gate['cmd'][0]} (from {' '.join(gate['cmd'])!r})")
+        if not found:
+            print(f"Gate skipped, {gate['cmd'][0]} is not installed: {' '.join(gate['cmd'])}")
+            continue
+        if found.startswith("/snap/"):
+            print(f"WARNING: {found} is a snap build; snap ruff can report no findings while checking nothing")
+        kept.append(gate)
+    return kept
+
+
+def _max_iterations(parser: argparse.ArgumentParser, flag: int | None, configured) -> int:
+    value = flag if flag is not None else configured if configured is not None else MAX_ITERATIONS
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        parser.error(f"max iterations must be a positive integer, got {value!r}")
+    return value
 
 
 @contextmanager
@@ -119,12 +161,13 @@ def main():
     if spec == plan:
         parser.error("--spec and --plan must be different files")
 
+    configured = args.gate if args.gate is not None else config.get("gates")
     try:
-        gates = build_gates(args.gate if args.gate is not None else config.get("gates"))
+        gates = _check_gates(parser, build_gates(configured), configured is not None)
     except SystemExit as exc:
         parser.error(str(exc))
     agents = _agents(parser, config.get("agents", {}), args.agent)
-    max_iterations = args.max_iterations or config.get("max_iterations") or MAX_ITERATIONS
+    max_iterations = _max_iterations(parser, args.max_iterations, config.get("max_iterations"))
     allow_dirs = []
     for raw in [*args.allow_dir, *config.get("allow_dirs", [])]:
         path = Path(raw).expanduser().resolve()
@@ -138,12 +181,17 @@ def main():
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
 
-    with _plan_lock(plan):
-        run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
+    try:
+        with _plan_lock(plan):
+            clean = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    # 0 only when the queue is closed, the gates are green and the audit is clean — usable from CI
+    sys.exit(0 if clean else 1)
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
-        gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool):
+        gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool) -> bool:
     log_path = runlog.start(log_dir or repo / MAE_DIR / "runs")
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
@@ -186,11 +234,14 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
             "audit_clean": False,
             "focus": focus,
             "iteration": 0,
+            "idle_passes": 0,
             "max_iterations": max_iterations,
         }, {"recursion_limit": 4 * max_iterations})  # 4 nodes per pass, worst case
     except BaseException as exc:
         runlog.log("aborted", error=f"{type(exc).__name__}: {exc}", usage=runlog.totals())
         print(f"\nAborted: {type(exc).__name__}: {exc}\nPlan: {_tally(str(plan))}\nUsage: {runlog.summary()}")
+        if isinstance(exc, (RuntimeError, TimeoutError)):  # an agent failed: the message says it all
+            raise SystemExit(1)
         raise
 
     runlog.log("finish", iterations=result["iteration"], tests_passed=result["tests_passed"],
@@ -203,6 +254,9 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
         print(f"Review with: git -C {repo} log --oneline {base_sha[:7]}..{branch}")
     if result["errors"] or result["problems"]:
         print(json.dumps({"errors": result["errors"], "problems": result["problems"]}, indent=2))
+    if result.get("idle_passes", 0) >= IDLE_LIMIT:
+        print(f"Stopped early: {IDLE_LIMIT} coder passes in a row changed nothing. Read the last coder output above.")
+    return bool(result["tests_passed"] and result["audit_clean"] and plan_done(str(plan)))
 
 
 if __name__ == "__main__":

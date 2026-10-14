@@ -16,4 +16,5 @@ class GraphState(TypedDict):
     audit_clean: bool  # last audit found nothing; only then may the run end
     focus: list[str]  # units open at run start; scopes the audit
     iteration: int
+    idle_passes: int  # consecutive coder passes that changed no file (git runs only)
     max_iterations: int

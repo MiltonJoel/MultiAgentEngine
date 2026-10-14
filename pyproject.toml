@@ -7,6 +7,7 @@ dependencies = ["langgraph>=1.2,<2"]
 
 [project.scripts]
 mae = "engine.main:main"
+mae-ui = "engine.ui:main"
 
 [build-system]
 requires = ["setuptools>=64"]
@@ -16,7 +17,7 @@ build-backend = "setuptools.build_meta"
 packages = ["engine", "engine.nodes"]
 
 [tool.setuptools.package-data]
-engine = ["prompts/*.md"]
+engine = ["prompts/*.md", "ui.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

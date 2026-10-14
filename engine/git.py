@@ -4,10 +4,14 @@ import subprocess
 from datetime import datetime, timezone
 
 MAX_DIFF_CHARS = 20000
+# Never committed by a checkpoint, even when the target repo's .gitignore forgets them.
+EXCLUDE = [":(exclude,glob)**/.env", ":(exclude,glob)**/.env.*", ":(exclude,glob)**/*.pem",
+           ":(exclude,glob)**/*.key", ":(exclude,glob)**/id_rsa*", ":(exclude,glob)**/__pycache__/**",
+           ":(exclude,glob).mae/runs/**"]
 
 
 def _git(repo: str, *args: str) -> tuple[int, str]:
-    proc = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False)
+    proc = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf8", errors="replace", check=False)
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
@@ -28,7 +32,7 @@ def start_branch(repo: str) -> str | None:
 
 def checkpoint(repo: str, message: str) -> str | None:
     """Commit everything; None if there was nothing to commit."""
-    _git(repo, "add", "-A")
+    _git(repo, "add", "-A", "--", ".", *EXCLUDE)
     code, out = _git(repo, "commit", "-m", message)
     if code:
         if "nothing to commit" not in out:
@@ -48,6 +52,11 @@ def diff(repo: str, ref: str = "HEAD~1") -> str:
     if len(body) > MAX_DIFF_CHARS:
         body = body[:MAX_DIFF_CHARS] + f"\n[... diff truncated at {MAX_DIFF_CHARS} chars ...]"
     return f"{out}\n\n{body}".strip()
+
+
+def dirty(repo: str) -> bool:
+    """Uncommitted changes outside the excluded paths."""
+    return bool(_git(repo, "status", "--porcelain", "--", ".", *EXCLUDE)[1])
 
 
 def head(repo: str) -> str | None:

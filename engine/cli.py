@@ -50,22 +50,29 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render) -> tuple[list[str], int]:
     """Run cmd with the prompt on stdin, printing progress live; returns (raw lines, exit code)."""
     print(f"\n--- {label} ---", flush=True)
-    proc = subprocess.Popen(
-        cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, start_new_session=True,
-    )
-    proc.stdin.write(prompt)
-    proc.stdin.close()
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf8", errors="replace", bufsize=1, start_new_session=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(f"{label}: `{cmd[0]}` is not installed or not on PATH")
     timed_out = threading.Event()
 
     def on_timeout():
         timed_out.set()
         _kill_tree(proc)
 
+    # started before the prompt is written, so a CLI that never reads stdin can't hang us
     timer = threading.Timer(timeout, on_timeout)
     timer.start()
     lines = []
     try:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except BrokenPipeError:  # the CLI exited before reading; its output says why
+            pass
         for line in proc.stdout:
             if CODEX_NOISE.search(line):
                 print(f"[{label}] (codex could not refresh its model list; using defaults)", flush=True)
@@ -163,6 +170,8 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
                add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
+    if write:  # headless acceptEdits refuses Bash, so the coder could never run the tests DONE requires
+        cmd += ["--allowedTools", "Bash"]
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
     if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
@@ -193,7 +202,7 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
         _stream(cmd, prompt, cwd, timeout=timeout, label=label)
         runlog.log("agent", label=label, agent="codex", seconds=round(time.monotonic() - started, 1),
                    prompt_chars=len(prompt))  # codex reports no cost of its own
-        return Path(last_message).read_text().strip()
+        return Path(last_message).read_text(encoding="utf8", errors="replace").strip()
     finally:
         os.unlink(last_message)
         if schema_file:

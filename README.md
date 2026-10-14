@@ -187,6 +187,30 @@ Ese es todo el flujo diario: **edita el bloque, ejecuta `mae`, revisa la rama.**
 
 ---
 
+## Interfaz web — `mae-ui`
+
+Todo lo anterior también se hace desde el navegador:
+
+```bash
+mae-ui --repo ~/code/myproject          # abre http://127.0.0.1:8765/?token=…
+mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirla
+```
+
+- **Mission** — el grafo coder → tester → reviewer/auditor con el nodo activo en vivo,
+  pasadas, errores de los gates, resultado de la auditoría y coste; elegir la CLI de cada
+  rol, gates, tope de pasadas y `--no-git`; lanzar y detener (detener = Ctrl-C: se
+  conservan los checkpoints); consola en vivo filtrable por agente.
+- **Queue & spec** — las unidades del bloque `ENGINE-STATUS` en columnas por estado:
+  añadir, cambiar de estado o borrar sin tocar el resto del plan; editores de `spec.md`,
+  `plan.md` y `.mae/config.json` (<kbd>Ctrl</kbd>+<kbd>S</kbd> guarda).
+- **History** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
+  los commits de checkpoint de la rama, con el diff de cada uno.
+
+La UI lanza el mismo `mae` como subproceso, una ejecución a la vez. Escucha solo en
+`127.0.0.1` y cada arranque genera un token que la API exige: abre la URL que imprime.
+
+---
+
 ## Los dos archivos que son tuyos
 
 Viven **en el repo objetivo**, no en este. El motor no incluye documentos propios, así
@@ -276,6 +300,11 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
 
+`mae` sale con código 0 solo si la cola queda cerrada, los gates en verde y la auditoría
+limpia; 1 en cualquier otro caso (útil en CI), 130 con Ctrl-C. Antes de arrancar comprueba
+que las CLIs de cada rol y las herramientas de los gates configurados existen: un gate
+configurado cuya herramienta falta es un error, no un aprobado silencioso.
+
 Una sola ejecución por archivo de plan: una segunda sale inmediatamente en vez de
 mezclar sus escrituras en el mismo bloque de estado.
 
@@ -341,10 +370,13 @@ no encuentra tests, así que en un repo todavía sin tests usa la forma del conf
                                                   sí → reabre esas unidades (TODO) → CODER
 ```
 
+Si dos pasadas seguidas del coder no cambian ningún archivo (con git activo), la ejecución
+se detiene en vez de seguir pagando por pasadas vacías.
+
 Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
 bucle termina en cuanto no queda nada abierto y la auditoría sale limpia.
 
-**CODER** (`claude`, puede editar archivos, 90 min de presupuesto) — implementa los
+**CODER** (`claude`, puede editar archivos y ejecutar comandos, 90 min de presupuesto) — implementa los
 elementos abiertos, escribe tests para cada uno y ejecuta solo esos tests; pasa la línea a
 `DONE` cuando pasan, así una sesión interrumpida no pierde nada. Lo que necesita datos,
 red, credenciales o una decisión humana va a `BLOCKED` con el motivo, nunca a `DONE`. La
@@ -427,6 +459,9 @@ git -C <repo> diff HEAD~1          # lo que hizo la última pasada
 git -C <repo> reset --hard <sha>   # volver a cualquier pasada
 ```
 
+Los checkpoints nunca incluyen `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`__pycache__/` ni `.mae/runs/`, aunque el `.gitignore` del repo los olvide.
+
 ¿No es un repo git? La ejecución funciona igual, sin protección, y lo avisa. `--no-git`
 lo desactiva a propósito.
 
@@ -490,6 +525,8 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 | El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
 | `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
 | El coder no actualizó el plan | No podía acceder al archivo. Los directorios de spec y plan se permiten automáticamente; cualquier otro necesita `--allow-dir`. |
+| El coder deja las unidades en `IN_PROGRESS` porque "no puede ejecutar pytest" | Versión anterior del motor: `claude -p` en `acceptEdits` rechaza Bash. Ahora el coder recibe `--allowedTools Bash`. |
+| `Stopped early: 2 coder passes in a row changed nothing` | El coder no avanza. Lee su última salida: suele pedir algo (permiso, dato, decisión). |
 | El bucle termina con unidades abiertas | Llegó a `--max-iterations`. Súbelo por encima del número de unidades abiertas y vuelve a ejecutar — continúa donde lo dejó. |
 | `[auditor] reopened: …` | El auditor encontró problemas en unidades `DONE`; el motor las volvió a `TODO` con el hallazgo como nota. Es lo esperado: el coder las arregla y se audita otra vez. |
 | Termina en el tope con `audit_clean=False` | El auditor sigue encontrando problemas. Lee las notas `audit:` del plan y los `problems` impresos al final; corrige la especificación si pide algo imposible, o marca la unidad `BLOCKED`. |
@@ -521,6 +558,8 @@ MultiAgentEngine/
 │   ├── prompts.py       carga de prompts con personalización por repo
 │   ├── prompts/         coder.md, reviewer.md, auditor.md
 │   ├── runlog.py        log JSONL, totales de coste y tokens
+│   ├── ui.py            servidor de `mae-ui` (stdlib), API con token
+│   ├── ui.html          la página de `mae-ui`, sin dependencias
 │   └── nodes/
 │       ├── coder.py     agente de implementación
 │       ├── tester.py    gates deterministas y parseo de su salida
@@ -528,7 +567,8 @@ MultiAgentEngine/
 └── tests/
     ├── test_engine.py   parseo del plan, enrutamiento, parseo de salidas, log
     ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
-    └── test_ops.py      checkpoints, bloqueo del plan
+    ├── test_ops.py      checkpoints, bloqueo del plan, pasadas vacías
+    └── test_ui.py       API de la UI, token, ejecución completa con una CLI simulada
 ```
 
 ```bash

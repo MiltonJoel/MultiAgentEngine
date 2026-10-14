@@ -65,8 +65,8 @@ def _focus(state: GraphState) -> str:
 def reviewer_node(state: GraphState) -> dict:
     prompt = prompts.load(
         "reviewer", state["repo"],
-        spec=Path(state["spec"]).read_text(),
-        plan=Path(state["plan"]).read_text(),
+        spec=Path(state["spec"]).read_text(encoding="utf8", errors="replace"),
+        plan=Path(state["plan"]).read_text(encoding="utf8", errors="replace"),
         errors=json.dumps(state["errors"], indent=2),
         diff=_diff(state, "HEAD~1"),  # the pass that just failed
     )
@@ -77,8 +77,8 @@ def reviewer_node(state: GraphState) -> dict:
 def auditor_node(state: GraphState) -> dict:
     prompt = prompts.load(
         "auditor", state["repo"],
-        spec=Path(state["spec"]).read_text(),
-        plan=Path(state["plan"]).read_text(),
+        spec=Path(state["spec"]).read_text(encoding="utf8", errors="replace"),
+        plan=Path(state["plan"]).read_text(encoding="utf8", errors="replace"),
         focus=_focus(state),
         diff=_diff(state, state.get("base_sha")),  # everything this run changed
     )
