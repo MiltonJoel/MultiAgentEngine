@@ -100,7 +100,8 @@ main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
 /* launch */
 .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .roles label, .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
-.roles select { width: 100%; }
+.roles select, .roles input.model { width: 100%; }
+.roles input.model { margin-top: 6px; }
 .field { margin-top: 10px; }
 .field textarea { width: 100%; min-height: 64px; resize: vertical; font-family: var(--mono); font-size: 12px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -242,10 +243,11 @@ kbd { font: 11px var(--mono); background: var(--panel2); border: 1px solid var(-
         <div class="card" id="launchCard">
           <h2>Launch</h2>
           <div class="roles">
-            <div><label for="r-coder">Coder</label><select id="r-coder"></select></div>
-            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select></div>
-            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select></div>
+            <div><label for="r-coder">Coder</label><select id="r-coder"></select><input type="text" class="model" id="m-coder" aria-label="Coder model" spellcheck="false"></div>
+            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><input type="text" class="model" id="m-reviewer" aria-label="Reviewer model" spellcheck="false"></div>
+            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><input type="text" class="model" id="m-auditor" aria-label="Auditor model" spellcheck="false"></div>
           </div>
+          <button class="btn small" id="freeBtn" style="margin-top:8px" title="Free local model through Ollama: no subscription, no API key">Use free models for every role</button>
           <details>
             <summary>Gates, iterations, git</summary>
             <div class="field"><label for="gates">Gates — one command per line (blank = repo config or defaults)</label>
@@ -408,9 +410,11 @@ function renderState(fresh) {
     const saved = store.get("agents:" + repo, {});
     for (const role of ROLES) {
       const sel = $("r-" + role);
-      sel.replaceChildren(...Object.keys(S.clis).map((cli) =>
-        el("option", { value: cli }, cli + (S.clis[cli] ? "" : " (not installed)"))));
-      sel.value = saved[role] || S.defaults.agents[role];
+      sel.replaceChildren(...Object.keys(S.runners).map((name) =>
+        el("option", { value: name }, (RUNNER_LABEL[name] || name) + (S.runners[name].ready ? "" : " — not ready"))));
+      const [name, ...model] = (saved[role] || S.defaults.agents[role]).split(":");
+      sel.value = S.runners[name] ? name : S.defaults.agents[role];
+      $("m-" + role).value = model.join(":");
     }
     const opts = store.get("opts:" + repo, {});
     $("gates").value = opts.gates || "";
@@ -424,11 +428,26 @@ function renderState(fresh) {
   renderLaunchWarnings();
 }
 
-function renderAgents() { for (const role of ROLES) $("a-" + role).textContent = $("r-" + role).value; }
-ROLES.forEach((r) => $("r-" + r).addEventListener("change", () => {
+const RUNNER_LABEL = { claude: "claude", codex: "codex", ollama: "ollama (free, local)", api: "api (OpenAI-compatible)" };
+// "ollama" or "ollama:<model>"; the model box only shows for runners that call a model over HTTP
+function agentOf(role) {
+  const name = $("r-" + role).value, model = $("m-" + role).value.trim();
+  return S && S.runners[name] && S.runners[name].model != null && model ? `${name}:${model}` : name;
+}
+function renderAgents() {
+  for (const role of ROLES) {
+    const r = S && S.runners[$("r-" + role).value], box = $("m-" + role);
+    box.hidden = !r || r.model == null;
+    box.placeholder = r && r.model ? r.model : "model";
+    $("a-" + role).textContent = agentOf(role);
+  }
+}
+function agentsChanged() {
   renderAgents(); renderLaunchWarnings();
-  store.set("agents:" + repo, Object.fromEntries(ROLES.map((x) => [x, $("r-" + x).value])));
-}));
+  store.set("agents:" + repo, Object.fromEntries(ROLES.map((x) => [x, agentOf(x)])));
+}
+ROLES.forEach((r) => { $("r-" + r).addEventListener("change", agentsChanged); $("m-" + r).addEventListener("change", agentsChanged); });
+$("freeBtn").addEventListener("click", () => { for (const r of ROLES) $("r-" + r).value = "ollama"; agentsChanged(); });
 ["gates", "maxIter", "noGit", "noGates"].forEach((id) => $(id).addEventListener("change", () =>
   store.set("opts:" + repo, { gates: $("gates").value, maxIter: $("maxIter").value, noGit: $("noGit").checked, noGates: $("noGates").checked })));
 
@@ -442,7 +461,10 @@ function renderLaunchWarnings() {
     }) }, "Create them");
     box.append(el("div", { class: "warn err" }, `Missing ${[S.docs.spec === null && "spec", S.docs.plan === null && "plan"].filter(Boolean).join(" and ")}.`, b));
   }
-  for (const role of ROLES) if (!S.clis[$("r-" + role).value]) warn(`The ${$("r-" + role).value} CLI is not on PATH, so the ${role} cannot run.`, true);
+  for (const name of new Set(ROLES.map((role) => $("r-" + role).value))) {
+    const r = S.runners[name], roles = ROLES.filter((role) => $("r-" + role).value === name);
+    if (r && !r.ready) warn(`${roles.join(", ")} cannot run: ${r.why}`, true);
+  }
   if (!live.running && S.units.length && !S.units.some((u) => u.state === "TODO" || u.state === "IN_PROGRESS"))
     warn("Nothing is open: every unit is DONE or BLOCKED. Add or reopen a unit first.");
   if (!S.git.is_repo && !$("noGit").checked) warn("Not a git repository: the run works, but without checkpoints to roll back to.");
@@ -501,7 +523,7 @@ document.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("clic
 $("startBtn").addEventListener("click", guard(async () => {
   const gatesText = $("gates").value.split("\n").map((s) => s.trim()).filter(Boolean);
   const body = {
-    repo, agents: Object.fromEntries(ROLES.map((r) => [r, $("r-" + r).value])),
+    repo, agents: Object.fromEntries(ROLES.map((r) => [r, agentOf(r)])),
     gates: $("noGates").checked ? [] : gatesText.length ? gatesText : null,
     max_iterations: $("maxIter").value || null, no_git: $("noGit").checked,
   };

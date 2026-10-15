@@ -15,8 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from engine import git
-from engine.cli import DEFAULT_AGENTS, RUNNERS
+from engine import git, llm
+from engine.cli import DEFAULT_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
 from engine.graph import MAX_ITERATIONS, STATUS_BLOCK, STATUS_LINE, plan_unparsed
 from engine.main import CONFIG, DEFAULT_PLAN, DEFAULT_SPEC, MAE_DIR, NEW_PLAN
 from engine.nodes.tester import DEFAULT_GATES
@@ -161,6 +161,24 @@ def edit_unit(text: str, name: str, state: str | None, note: str = "") -> str:
     return text[:start] + "\n".join(lines) + text[end:]
 
 
+def runners(repo: Path) -> dict:
+    """Every runner with why it can't run here ('' = ready) and, for the model runners, the model it would use."""
+    try:
+        llm.configure(_config(repo).get("llm"))
+        broken = ""
+    except (SystemExit, ValueError) as exc:
+        broken = f".mae/config.json: {exc}"
+    out = {}
+    for name in RUNNERS:
+        if name in MODEL_RUNNERS:
+            why = broken or llm.check(name, timeout=1)
+            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"]}
+        else:
+            found = shutil.which(name)
+            out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH", "model": None}
+    return out
+
+
 def state(repo: Path) -> dict:
     docs = _docs(repo)
     read = {k: p.read_text(encoding="utf8") if p.is_file() else None for k, p in docs.items()}
@@ -173,7 +191,7 @@ def state(repo: Path) -> dict:
         "unparsed": plan_unparsed(str(docs["plan"])) if read["plan"] is not None else [],
         "git": {"is_repo": is_repo,
                 "branch": git._git(str(repo), "rev-parse", "--abbrev-ref", "HEAD")[1] if is_repo else None},
-        "clis": {name: shutil.which(name) for name in RUNNERS},
+        "runners": runners(repo),
         "defaults": {"agents": DEFAULT_AGENTS, "gates": [g["cmd"] for g in DEFAULT_GATES],
                      "max_iterations": MAX_ITERATIONS},
     }
@@ -217,10 +235,12 @@ def _events(path: Path) -> list[dict]:
 def run_args(body: dict) -> list[str]:
     """UI launch options -> `mae` flags; validated here so a bad value fails before anything spawns."""
     args = []
-    for role, cli in (body.get("agents") or {}).items():
-        if role not in DEFAULT_AGENTS or cli not in RUNNERS:
-            raise ValueError(f"bad agent binding {role}={cli}")
-        args += ["--agent", f"{role}={cli}"]
+    for role, agent in (body.get("agents") or {}).items():
+        cli, model = split_agent(str(agent))
+        if role not in DEFAULT_AGENTS or cli not in RUNNERS or (model and cli not in MODEL_RUNNERS) \
+                or any(c.isspace() for c in model):
+            raise ValueError(f"bad agent binding {role}={agent}")
+        args += ["--agent", f"{role}={cli}:{model}" if model else f"{role}={cli}"]
     gates = body.get("gates")
     if gates is not None:
         if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):

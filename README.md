@@ -1,8 +1,13 @@
 # MultiAgentEngine
 
-Un bucle de LangGraph que dirige dos agentes de programación — la CLI `claude` y la
-CLI `codex` — contra un repositorio hasta que una especificación de arquitectura
-queda implementada, testeada y auditada.
+Un bucle de LangGraph que dirige agentes de programación — la CLI `claude`, la CLI
+`codex` o un **modelo gratuito** (local con Ollama, o cualquier API compatible con
+OpenAI) — contra un repositorio hasta que una especificación de arquitectura queda
+implementada, testeada y auditada.
+
+**No necesitas ninguna suscripción de pago.** Con `mae --free` los tres roles usan un
+modelo local a través de [Ollama](https://ollama.com): sin cuenta, sin clave, sin coste.
+Ver [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
 
 Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, los
 valida con un paso de tests determinista, mantiene la cola de trabajo al día y se
@@ -46,6 +51,7 @@ Variantes habituales:
 
 ```bash
 mae --repo ~/code/myproject                              # desde cualquier carpeta
+mae --free                                               # todo gratis, con un modelo local (Ollama)
 mae --agent reviewer=claude --agent auditor=claude       # solo claude, sin codex
 mae --gate "npm test" --gate "eslint . -f json"          # proyecto JavaScript
 mae --gate ''                                            # sin tests ni lint
@@ -95,18 +101,26 @@ acceso normal a PyPI no hace falta.
 Comprueba las herramientas que usa:
 
 ```bash
-which mae claude codex pytest ruff git
+which mae pytest ruff git
+which ollama              # opción gratuita
+which claude codex        # opción de pago (suscripción o clave)
 ```
+
+Necesitas **al menos un** proveedor de modelo. Cualquiera de estos sirve para cualquier
+rol, y puedes mezclarlos:
 
 | Herramienta | Rol | Notas |
 |---|---|---|
-| CLI `claude`, con sesión iniciada | el programador (coder) | en el `PATH`, ya autenticada |
-| CLI `codex`, con sesión iniciada | revisor y auditor | en el `PATH`, ya autenticada — o asigna esos roles a `claude` |
+| [Ollama](https://ollama.com) con un modelo descargado | cualquiera (`--free` los usa para todos) | **gratis**, local, sin cuenta ni clave: `ollama pull qwen2.5-coder:7b` |
+| Un endpoint compatible con OpenAI con plan gratuito | cualquiera (runner `api`) | p. ej. OpenRouter (modelos `:free`), Groq, Google AI Studio; clave en `MAE_API_KEY` |
+| CLI `claude`, con sesión iniciada | el programador (coder) por defecto | de pago; en el `PATH`, ya autenticada |
+| CLI `codex`, con sesión iniciada | revisor y auditor por defecto | de pago; en el `PATH`, ya autenticada — o asigna esos roles a otro |
 | `pytest` | gate de tests por defecto | se ejecuta dentro del repo **objetivo**; cámbialo con `--gate` |
 | `ruff` | gate de lint por defecto | se omite si no está instalado. **No uses la versión de snap** — ver [Solución de problemas](#solución-de-problemas) |
 | `git` | checkpoints en el repo objetivo | opcional — sin él no hay punto de restauración |
 
-Aquí no se configuran claves de API. El motor usa CLIs en las que ya iniciaste sesión.
+Con Ollama o las CLIs no se configura ninguna clave de API. Solo el runner `api` usa una,
+y la lee de una variable de entorno, nunca de un archivo del repo.
 
 ### 2. Pon dos archivos en el repo que quieres construir
 
@@ -313,7 +327,8 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--plan FILE` | cola de trabajo (por defecto `<repo>/.mae/plan.md`) |
 | `--allow-dir DIR` | directorio extra que el coder puede leer; repetible |
 | `--gate CMD` | comando de validación tras cada pasada del coder; repetible, reemplaza la lista del config; `--gate ''` desactiva todos los gates |
-| `--agent ROLE=CLI` | asigna un rol a una CLI, p. ej. `--agent reviewer=claude`; repetible |
+| `--agent ROLE=RUNNER` | asigna un rol a `claude`, `codex`, `ollama` o `api`, p. ej. `--agent reviewer=claude`; `ollama` y `api` aceptan modelo: `--agent coder=ollama:qwen2.5-coder:14b`; repetible |
+| `--free` | todos los roles con el modelo local gratuito de Ollama; `--agent` y `"agents"` siguen cambiando roles sueltos |
 | `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
 | `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
@@ -363,6 +378,7 @@ Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen pr
     "eslint . -f json"
   ],
   "agents": {"reviewer": "claude", "auditor": "claude"},
+  "llm": {"ollama": {"model": "qwen2.5-coder:14b"}},
   "max_iterations": 20,
   "allow_dirs": ["~/code/reference-lib"]
 }
@@ -372,7 +388,10 @@ Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen pr
 - `gates` — se ejecutan en orden. Cada entrada es un comando (código de salida 0 = pasa),
   o `{"cmd", "ok_codes"}` cuando otros códigos también cuentan como pasar. `[]` = sin
   gates. Si se omite = pytest y luego ruff.
-- `agents` — los roles son `coder`, `reviewer`, `auditor`; las CLIs son `claude`, `codex`.
+- `agents` — los roles son `coder`, `reviewer`, `auditor`; los runners son `claude`,
+  `codex`, `ollama` y `api` (estos dos con modelo opcional: `"ollama:llama3.1:8b"`).
+- `llm` — dónde están los modelos gratuitos; ver
+  [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
 
 Un gate pasado con `--gate` solo acepta el código de salida 0. pytest sale con 5 cuando
 no encuentra tests, así que en un repo todavía sin tests usa la forma del config
@@ -451,6 +470,70 @@ primero.
 
 ---
 
+## Modelos gratuitos — sin suscripción
+
+El motor trae su propio agente (`engine/llm.py`, solo biblioteca estándar) que habla con
+cualquier endpoint compatible con OpenAI y le da al modelo las mismas herramientas que
+tienen las CLIs: listar, leer y buscar archivos y, para el coder, escribir y editar
+archivos y ejecutar comandos — así puede correr los tests que `DONE` exige. El revisor y
+el auditor solo reciben las herramientas de lectura. Fuera del repo solo puede tocar los
+directorios de la especificación, del plan y de `--allow-dir`.
+
+### Local con Ollama (recomendado, gratis)
+
+```bash
+# 1. Instala Ollama: https://ollama.com/download (Linux: curl -fsSL https://ollama.com/install.sh | sh)
+# 2. Descarga un modelo con soporte de herramientas
+ollama pull qwen2.5-coder:7b          # ~5 GB; con 16 GB+ de RAM prueba qwen2.5-coder:14b
+# 3. Dale contexto suficiente (el valor por defecto de Ollama corta prompts largos)
+OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+# 4. Ejecuta
+mae --free
+```
+
+Por defecto usa `qwen2.5-coder:7b` en `http://localhost:11434/v1`. Para cambiarlo:
+
+```bash
+mae --free --agent coder=ollama:qwen2.5-coder:14b      # un modelo mayor solo para el coder
+export MAE_OLLAMA_MODEL=llama3.1:8b                    # otro modelo por defecto
+export MAE_OLLAMA_URL=http://otra-maquina:11434/v1     # Ollama en otra máquina
+```
+
+o en `.mae/config.json`: `"llm": {"ollama": {"url": "...", "model": "..."}}`. Antes de
+arrancar, `mae` comprueba que Ollama responde y que el modelo está descargado, y si no
+te dice qué ejecutar.
+
+### Una API gratuita (runner `api`)
+
+Cualquier servicio compatible con OpenAI. Con un plan gratuito no pagas nada; ten en
+cuenta sus límites por minuto (el motor reintenta los 429 respetando `Retry-After`).
+
+```json
+{
+  "agents": {"coder": "api", "reviewer": "api", "auditor": "ollama"},
+  "llm": {"api": {"url": "https://openrouter.ai/api/v1",
+                  "model": "qwen/qwen-2.5-coder-32b-instruct:free",
+                  "key_env": "OPENROUTER_API_KEY"}}
+}
+```
+
+`key_env` es el nombre de la variable de entorno con la clave (por defecto
+`MAE_API_KEY`); la clave nunca va en el archivo. También sirven `MAE_API_URL` y
+`MAE_API_MODEL`.
+
+### Qué esperar
+
+Un modelo local de 7–14 B es mucho más lento y menos capaz que `claude` o `codex`:
+funciona bien en unidades pequeñas y bien especificadas, y le cuesta más con cambios
+grandes. Divide el plan en unidades pequeñas, sube `--max-iterations`, o mezcla: un
+modelo gratuito para revisor y auditor y uno mejor para el coder. El coste que se
+registra para estos runners es 0; los tokens sí se cuentan.
+
+En `mae-ui`, cada rol tiene un selector con `ollama (free, local)` y `api`, un campo para
+el modelo, y el botón **Use free models for every role**.
+
+---
+
 ## Roles, CLIs y prompts
 
 Qué CLI cumple cada rol es configuración:
@@ -460,7 +543,7 @@ mae --agent reviewer=claude --agent auditor=claude    # solo claude, sin necesid
 ```
 
 Todas las funciones que lanzan una CLI aceptan los mismos argumentos (`write`,
-`add_dirs`, `schema`, `timeout`), así que añadir una tercera CLI es una función más una
+`add_dirs`, `schema`, `timeout`), así que añadir otra CLI es una función más una
 entrada en `RUNNERS` en `engine/cli.py`. Dos limitaciones de las que el motor avisa:
 `codex` no tiene `--add-dir`, y `claude` no tiene esquema de salida, así que se le pide
 JSON en el prompt.
@@ -550,7 +633,11 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 | `has nothing left open — every item is DONE or BLOCKED` | Funciona como debe. Añade una línea `TODO` o reabre una. |
 | `WARNING: unreadable status line, it will be ignored` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
 | Escribiste una sección nueva pero no se ejecuta nada | La prosa no participa en el enrutamiento. Añade una línea `<nombre>: TODO` dentro del bloque. |
-| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. CLIs: claude, codex. |
+| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. Runners: claude, codex, ollama, api. |
+| `the claude CLI is not on PATH` y no tienes suscripción | Usa `mae --free` (Ollama) o el runner `api` con un plan gratuito. |
+| `Ollama is not reachable at http://localhost:11434/v1` | Ollama no está instalado o no está corriendo: instálalo y ejecuta `ollama serve`. |
+| `Ollama has no model 'qwen2.5-coder:7b'` | `ollama pull qwen2.5-coder:7b`, o elige uno que ya tengas con `--agent ROLE=ollama:<modelo>`. |
+| El modelo local responde sin usar herramientas o ignora el plan | Contexto demasiado corto: arranca Ollama con `OLLAMA_CONTEXT_LENGTH=32768`, o usa un modelo mayor. |
 | `another run already holds <plan>` | Hay otra ejecución sobre ese plan. Espera o termínala. |
 | El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
 | `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
@@ -584,6 +671,7 @@ MultiAgentEngine/
 │   ├── graph.py         parseo del bloque de estado, enrutamiento, grafo de LangGraph
 │   ├── state.py         GraphState
 │   ├── cli.py           funciones para claude/codex (RUNNERS), esperas por límite de uso
+│   ├── llm.py           agente propio para modelos gratuitos (Ollama / API compatible con OpenAI)
 │   ├── git.py           rama por ejecución, checkpoints, diffs
 │   ├── prompts.py       carga de prompts con personalización por repo
 │   ├── prompts/         coder.md, reviewer.md, auditor.md
@@ -598,6 +686,7 @@ MultiAgentEngine/
     ├── test_engine.py   parseo del plan, enrutamiento, parseo de salidas, log
     ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
     ├── test_ops.py      checkpoints, bloqueo del plan, pasadas vacías
+    ├── test_llm.py      modelos gratuitos contra un servidor compatible con OpenAI simulado
     └── test_ui.py       API de la UI, token, ejecución completa con una CLI simulada
 ```
 

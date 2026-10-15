@@ -1,7 +1,11 @@
 [project]
 name = "multiagent-engine"
 version = "0.2.0"
-description = "LangGraph loop driving the claude and codex CLIs against a repo until a spec is implemented, tested and audited."
+description = "LangGraph loop driving coding agents (the claude and codex CLIs, or free models through Ollama or any OpenAI-compatible API) against a repo until a spec is implemented, tested and audited."
+readme = "README.md"
+license = {text = "MIT"}
+# Model providers are not Python packages: install at least one of Ollama (free, local), the claude CLI or the codex CLI,
+# or point the `api` runner at an OpenAI-compatible endpoint. The free-model runners use only the standard library.
 requires-python = ">=3.10"
 dependencies = ["langgraph>=1.2,<2"]
 
