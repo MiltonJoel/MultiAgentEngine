@@ -50,6 +50,31 @@ def plan_unparsed(plan_path: str) -> list[str]:
             if line.strip() and not STATUS_LINE.match(line)]
 
 
+def plan_issues(plan_path: str, expected: list[str] | None = None) -> list[str]:
+    """Ways the status block has stopped saying what the engine thinks it says; [] when it reads cleanly.
+    expected: unit names that must still be listed (the units open at run start)."""
+    text = Path(plan_path).read_text(encoding="utf8", errors="replace")
+    blocks = list(STATUS_BLOCK.finditer(text))
+    if not blocks:
+        return ["the ENGINE-STATUS block is gone"] if expected else []
+    issues = []
+    if len(blocks) > 1:
+        issues.append(f"{len(blocks)} ENGINE-STATUS blocks — the engine reads only the first; merge them into one")
+    rest = text[blocks[0].end():].split("\n", 1)[0]
+    if rest.strip():
+        issues.append(f"a `-->` inside a status line closed the block early (`...-->{rest.strip()[:60]}`) — "
+                      "write → instead; every unit after it is invisible to the engine")
+    issues += [f"unreadable status line, the engine ignores it: {line}" for line in plan_unparsed(plan_path)]
+    listed = {name.casefold() for name, _ in plan_items(plan_path)}
+    issues += [f"unit {name!r} was open at run start and is no longer in the status block — restore it, or mark "
+               "it BLOCKED with a reason" for name in expected or [] if name.casefold() not in listed]
+    return issues
+
+
+def plan_blocked(plan_path: str) -> list[str]:
+    return [name for name, state in plan_items(plan_path) if state == "BLOCKED"]
+
+
 def plan_done(plan_path: str) -> bool:
     """Nothing open. BLOCKED counts as finished — the loop can't unblock it."""
     states = plan_states(plan_path)
@@ -65,21 +90,22 @@ def reopen_units(plan_path: str, problems: list[dict]) -> list[str]:
         if unit and unit not in notes:  # first finding becomes the note; the coder sees all of them
             text = " ".join(str(problem.get("description", "")).split())
             notes[unit] = text.replace("-->", "→")[:MAX_NOTE_CHARS]  # "-->" would close the block
-    text = Path(plan_path).read_text(encoding="utf8", errors="replace")
+    with open(plan_path, encoding="utf8", errors="replace", newline="") as handle:  # keep CRLF plans CRLF
+        text = handle.read()
     block = STATUS_BLOCK.search(text)
     if not block or not notes:
         return []
     reopened, lines = [], []
     for line in block.group("body").split("\n"):
-        match = STATUS_LINE.match(line)
+        match = STATUS_LINE.match(line.rstrip("\r"))
         if match and match.group("state") == "DONE" and match.group("name").strip().casefold() in notes:
             name = match.group("name").strip()
-            line = f"{name}: TODO — audit: {notes[name.casefold()]}"
+            line = f"{name}: TODO — audit: {notes[name.casefold()]}" + ("\r" if line.endswith("\r") else "")
             reopened.append(name)
         lines.append(line)
     if reopened:
         start, end = block.span("body")
-        Path(plan_path).write_text(text[:start] + "\n".join(lines) + text[end:], encoding="utf8")
+        Path(plan_path).write_text(text[:start] + "\n".join(lines) + text[end:], encoding="utf8", newline="")
     return reopened
 
 

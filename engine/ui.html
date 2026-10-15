@@ -151,6 +151,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-
 .runitem .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; white-space: nowrap; }
 .b-clean { background: color-mix(in srgb, var(--done) 18%, transparent); color: var(--done); }
+.b-review { background: color-mix(in srgb, var(--prog) 18%, transparent); color: var(--prog); }
 .b-aborted, .b-finished { background: color-mix(in srgb, var(--blocked) 16%, transparent); color: var(--blocked); }
 .b-running { background: color-mix(in srgb, var(--prog) 16%, transparent); color: var(--prog); }
 .timeline { display: flex; flex-direction: column; gap: 0; font-size: 13px; }
@@ -565,7 +566,7 @@ function renderLive() {
   $("iterLabel").textContent = live.node ? `now: ${live.node}` : "";
   const pill = $("status");
   pill.className = "pill" + (live.running ? " running" : live.ended === 0 ? " clean" : live.ended !== null ? " failed" : "");
-  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Finished clean" : `Ended (exit ${live.ended})`;
+  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Finished clean" : live.ended === 2 ? "Finished · needs review" : `Ended (exit ${live.ended})`;
   $("startBtn").disabled = live.running || !S; $("stopBtn").disabled = !live.running;
 }
 
@@ -584,7 +585,7 @@ async function poll() {
     const wasRunning = live.running;
     live.running = out.running;
     if (!out.running && out.exit_code !== null) live.ended = out.exit_code;
-    if (wasRunning && !out.running) { refreshState().catch(() => {}); toast(out.exit_code === 0 ? "Run finished clean" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0); }
+    if (wasRunning && !out.running) { refreshState().catch(() => {}); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
     if (out.repo && !repo) openRepo(out.repo);
   } catch (e) {
     if (/token/.test(e.message)) { toast(e.message, true); return; }
@@ -611,7 +612,7 @@ async function loadRuns() {
   const box = $("runs");
   if (!runs.length) return box.replaceChildren(el("div", { class: "empty" }, "No runs yet in this repo."));
   box.replaceChildren(...runs.map((r) => {
-    const b = r.status === "clean" ? "clean" : r.status === "aborted" ? "aborted" : r.status.startsWith("finished") ? "finished" : "running";
+    const b = r.status === "clean" ? "clean" : r.status === "needs review" ? "review" : r.status === "aborted" ? "aborted" : r.status.startsWith("finished") ? "finished" : "running";
     return el("button", { class: "runitem", onclick: (e) => { document.querySelectorAll(".runitem").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); guard(showRun)(r); } },
       el("div", { class: "top" }, el("span", { class: "mono" }, r.name), el("span", { class: "badge b-" + b }, r.status)),
       el("div", { class: "meta" }, `${r.iterations} pass(es) · $${r.cost_usd.toFixed(2)}` + (r.focus?.length ? ` · ${r.focus.join(", ")}` : "")));

@@ -32,15 +32,29 @@ SCHEMA = {
 NO_DIFF = "(not available — the repository is not under git, or nothing was committed)"
 
 
+def _problem(item: dict) -> dict:
+    line = item.get("line")
+    return {"unit": str(item.get("unit") or ""), "file": str(item.get("file") or ""),
+            "line": line if isinstance(line, int) and not isinstance(line, bool) else 0,
+            "description": str(item.get("description") or ""), "suggested_fix": str(item.get("suggested_fix") or "")}
+
+
 def _parse_problems(raw: str) -> list[dict]:
-    """JSON out of a possibly fenced or chatty reply; a garbage reply becomes one problem, not a crash."""
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
+    """The first `{"problems": [...]}` object in a possibly fenced or chatty reply. Anything else — prose,
+    `{"problems": null}`, a list of strings — becomes one problem: a reply we can't read is never a clean audit."""
+    decoder = json.JSONDecoder()
+    for start in (m.start() for m in re.finditer(r"\{", raw)):
         try:
-            return json.loads(match.group())["problems"]
-        except (ValueError, KeyError, TypeError):
-            pass
-    return [{"file": "", "line": 0, "description": raw.strip()[:800], "suggested_fix": ""}]
+            payload, _ = decoder.raw_decode(raw, start)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and "problems" in payload:
+            problems = payload["problems"]
+            if isinstance(problems, list) and all(isinstance(item, dict) for item in problems):
+                return [_problem(item) for item in problems]
+            break
+    text = raw.strip()[:800] or "the agent returned an empty reply"
+    return [{"unit": "", "file": "", "line": 0, "description": f"unreadable reply: {text}", "suggested_fix": ""}]
 
 
 def _diff(state: GraphState, ref: str | None) -> str:

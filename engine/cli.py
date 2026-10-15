@@ -22,6 +22,25 @@ DEFAULT_WAIT = 1800  # no reset time in the output
 CLOCK_SKEW = 30
 MAX_WAITS = 4
 MAX_SLEEP = 6 * 3600  # a session limit is worth waiting out; a monthly cap is not
+# Only the end of a failed transcript is searched for a limit message: code or prose the agent wrote
+# earlier ("add a rate limit to the API") must not turn a real crash into hours of sleeping and re-runs.
+LIMIT_TAIL_LINES = 30
+
+
+def _limit_text(lines: list[str]) -> str:
+    """The CLI's own closing words: plain-text lines and the claude `result` event, never the agent's messages."""
+    kept = []
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            kept.append(line)
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            kept.append(f"{ev.get('subtype', '')} {ev.get('result', '')}")
+        elif not isinstance(ev, dict) or ev.get("type") not in ("assistant", "user", "system"):
+            kept.append(line)
+    return "".join(kept[-LIMIT_TAIL_LINES:])
 
 
 def _retry_delay(text: str, now: float | None = None) -> float:
@@ -92,15 +111,25 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
     return lines, proc.returncode
 
 
-def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render=None) -> list[str]:
-    """Run cmd, sleeping through usage/rate limits until they reset. Only a non-zero exit is inspected."""
+def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render=None,
+            failed=None, on_attempt=None) -> list[str]:
+    """Run cmd, sleeping through usage/rate limits until they reset.
+    failed(lines): a reason string when an exit-0 transcript still reports an error, else ''.
+    on_attempt(lines, seconds): called after every attempt, failed ones included, so their spend is logged."""
     for attempt in range(MAX_WAITS + 1):
-        lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
-        if code == 0:
+        started = time.monotonic()
+        lines = []
+        try:
+            lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
+        finally:
+            if on_attempt:
+                on_attempt(lines, time.monotonic() - started)
+        reason = (failed(lines) if failed else "") if code == 0 else f"exit {code}"
+        if not reason:
             return lines
-        delay = _retry_delay("".join(lines))
+        delay = _retry_delay(_limit_text(lines))
         if not delay or attempt == MAX_WAITS:
-            raise RuntimeError(f"{label} failed (exit {code})")
+            raise RuntimeError(f"{label} failed ({reason})")
         resume = datetime.now(timezone.utc).astimezone().replace(microsecond=0) + timedelta(seconds=delay)
         if delay > MAX_SLEEP:
             raise RuntimeError(
@@ -176,10 +205,19 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
         cmd += ["--add-dir", directory]
     if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
         prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
-    started = time.monotonic()
-    lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress)
-    runlog.log("agent", label=label, agent="claude", seconds=round(time.monotonic() - started, 1),
-               prompt_chars=len(prompt), **_claude_usage(lines))
+
+    def failed(lines: list[str]) -> str:
+        final = _claude_final(lines)
+        if not final:
+            return "no result event — the CLI stopped before finishing"
+        return f"reported {final.get('subtype') or 'an error'}" if final.get("is_error") else ""
+
+    def on_attempt(lines: list[str], seconds: float) -> None:
+        runlog.log("agent", label=label, agent="claude", seconds=round(seconds, 1),
+                   prompt_chars=len(prompt), **_claude_usage(lines))
+
+    lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress,
+                    failed=failed, on_attempt=on_attempt)
     return _claude_result(lines)
 
 
@@ -197,11 +235,12 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
         with os.fdopen(fd, "w") as f:
             json.dump(schema, f)
         cmd += ["--output-schema", schema_file]
+
+    def on_attempt(lines: list[str], seconds: float) -> None:  # codex reports no cost of its own
+        runlog.log("agent", label=label, agent="codex", seconds=round(seconds, 1), prompt_chars=len(prompt))
+
     try:
-        started = time.monotonic()
-        _stream(cmd, prompt, cwd, timeout=timeout, label=label)
-        runlog.log("agent", label=label, agent="codex", seconds=round(time.monotonic() - started, 1),
-                   prompt_chars=len(prompt))  # codex reports no cost of its own
+        _stream(cmd, prompt, cwd, timeout=timeout, label=label, on_attempt=on_attempt)
         return Path(last_message).read_text(encoding="utf8", errors="replace").strip()
     finally:
         os.unlink(last_message)

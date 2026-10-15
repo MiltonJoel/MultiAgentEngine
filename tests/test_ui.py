@@ -101,7 +101,7 @@ def test_api_launches_a_real_run_and_streams_it(server):
         old_path = os.environ["PATH"]
         os.environ["PATH"] = f"{bin_dir}:{old_path}"
         try:
-            body = {"repo": str(repo), "agents": {"reviewer": "claude", "auditor": "claude"}, "gates": []}
+            body = {"repo": str(repo), "agents": {"reviewer": "claude", "auditor": "claude"}, "gates": ["true"]}
             assert _call(server, "/api/run", body)[0] == 200
             assert _call(server, "/api/run", body)[0] == 400  # one run at a time
             deadline = time.time() + 60
@@ -116,3 +116,21 @@ def test_api_launches_a_real_run_and_streams_it(server):
         assert runs[0]["status"] == "clean" and runs[0]["iterations"] == 1 and runs[0]["cost_usd"] == pytest.approx(0.02)
         log = _call(server, f"/api/commits?repo={repo}&base={runs[0]['base_sha']}&branch={runs[0]['branch']}")[1]["log"]
         assert "engine: iteration 1 — green" in log
+
+
+def test_a_malformed_request_body_is_a_400_not_a_dropped_connection(server):
+    assert _call(server, "/api/run", [])[0] == 400
+    req = urllib.request.Request(server + "/api/run", data=b"{not json", headers={"X-MAE-Token": "secret-token"})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req)
+    assert exc.value.code == 400
+
+
+def test_run_history_uses_the_engines_own_verdict(tmp_path):
+    runs_dir = tmp_path / ".mae" / "runs"
+    runs_dir.mkdir(parents=True)
+    finish = {"event": "finish", "tests_passed": True, "audit_clean": True, "exit_code": 2, "caveats": ["BLOCKED: B"]}
+    (runs_dir / "20261014-000000.jsonl").write_text(json.dumps(finish) + "\n")
+    (runs_dir / "20261013-000000.jsonl").write_text(json.dumps({"event": "finish", "tests_passed": True,
+                                                                "audit_clean": True}) + "\n")  # older log
+    assert [r["status"] for r in ui.runs(tmp_path)] == ["needs review", "clean"]

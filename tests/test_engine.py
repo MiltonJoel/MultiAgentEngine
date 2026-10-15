@@ -130,9 +130,10 @@ def test_json_errors_reads_ruff_and_eslint_and_declines_the_rest():
 
 def test_parse_problems_tolerates_fences_and_junk():
     payload = {"problems": [{"file": "bot.py", "line": 42, "description": "d", "suggested_fix": "f"}]}
-    assert _parse_problems(json.dumps(payload)) == payload["problems"]
-    assert _parse_problems(f"```json\n{json.dumps(payload)}\n```") == payload["problems"]
-    assert _parse_problems("codex had a bad day")[0]["description"] == "codex had a bad day"
+    expected = [{"unit": "", **payload["problems"][0]}]
+    assert _parse_problems(json.dumps(payload)) == expected
+    assert _parse_problems(f"```json\n{json.dumps(payload)}\n```") == expected
+    assert _parse_problems("codex had a bad day")[0]["description"] == "unreadable reply: codex had a bad day"
 
 
 def test_codex_noise_is_recognised():

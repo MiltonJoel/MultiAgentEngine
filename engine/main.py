@@ -7,16 +7,17 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from engine import git, runlog
+from engine import git, prompts, runlog
 from engine.cli import DEFAULT_AGENTS, RUNNERS
 from engine.graph import (
     IDLE_LIMIT,
     MAX_ITERATIONS,
     build_graph,
+    plan_blocked,
     plan_done,
+    plan_issues,
     plan_open,
     plan_states,
-    plan_unparsed,
 )
 from engine.nodes.tester import build_gates
 
@@ -25,6 +26,9 @@ MAE_DIR = ".mae"
 CONFIG = f"{MAE_DIR}/config.json"
 DEFAULT_SPEC = "spec.md"
 DEFAULT_PLAN = "plan.md"
+# Exit codes, usable from CI. NEEDS_REVIEW: the queue closed green and audited, but a human still has to
+# look — some units are BLOCKED, or no gate ran so "green" checked nothing.
+EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW = 0, 1, 2
 
 NEW_PLAN = """<!-- ENGINE-STATUS
 First unit: TODO
@@ -53,6 +57,10 @@ def _repo_config(repo: Path) -> dict:
     for key, kind in (("agents", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str)):
         if key in config and not isinstance(config[key], kind):
             raise SystemExit(f"{path}: \"{key}\" must be a {kind.__name__}")
+    if not all(isinstance(d, str) for d in config.get("allow_dirs", [])):
+        raise SystemExit(f"{path}: \"allow_dirs\" must be a list of path strings")
+    if not all(isinstance(r, str) and isinstance(c, str) for r, c in config.get("agents", {}).items()):
+        raise SystemExit(f"{path}: \"agents\" maps role names to CLI names, both strings")
     print(f"Config: {path}")
     return config
 
@@ -91,11 +99,14 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str]) -> 
     return agents
 
 
-def _check_gates(parser: argparse.ArgumentParser, gates: list[dict], configured: bool) -> list[dict]:
-    """A configured gate whose tool is missing would pass silently, so it fails now; a missing default is dropped."""
+def _check_gates(parser: argparse.ArgumentParser, gates: list[dict], configured: bool, repo: Path) -> list[dict]:
+    """A configured gate whose tool is missing would pass silently, so it fails now; a missing default is dropped.
+    Gates run inside the repo, so a relative tool like scripts/check.sh is looked up there."""
     kept = []
     for gate in gates:
-        found = shutil.which(gate["cmd"][0])
+        tool = gate["cmd"][0]
+        local = repo / tool
+        found = shutil.which(str(local) if "/" in tool and not Path(tool).is_absolute() else tool)
         if not found and configured:
             parser.error(f"gate tool not found: {gate['cmd'][0]} (from {' '.join(gate['cmd'])!r})")
         if not found:
@@ -163,7 +174,7 @@ def main():
 
     configured = args.gate if args.gate is not None else config.get("gates")
     try:
-        gates = _check_gates(parser, build_gates(configured), configured is not None)
+        gates = _check_gates(parser, build_gates(configured), configured is not None, repo)
     except SystemExit as exc:
         parser.error(str(exc))
     agents = _agents(parser, config.get("agents", {}), args.agent)
@@ -175,23 +186,26 @@ def main():
             parser.error(f"allow-dir is not a directory: {path}")
         allow_dirs.append(str(path))
 
-    for bad in plan_unparsed(str(plan)):
-        print(f"WARNING: unreadable status line, it will be ignored: {bad}")
+    for issue in plan_issues(str(plan)):
+        print(f"WARNING: {issue}")
+    prompts.check(repo)
+    if not args.no_git and git.is_repo(str(repo)) and (why := git.busy(str(repo))):
+        parser.error(f"{repo}: {why} — finish or abort it first, or run with --no-git")
     if plan_done(str(plan)):
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
 
     try:
         with _plan_lock(plan):
-            clean = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
+            code = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
     except KeyboardInterrupt:
         sys.exit(130)
-    # 0 only when the queue is closed, the gates are green and the audit is clean — usable from CI
-    sys.exit(0 if clean else 1)
+    sys.exit(code)
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
-        gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool) -> bool:
+        gates: list[dict], max_iterations: int, log_dir: str | None, no_git: bool) -> int:
+    """EXIT_CLEAN only when the queue is closed, the gates are green and the audit is clean."""
     log_path = runlog.start(log_dir or repo / MAE_DIR / "runs")
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
@@ -207,8 +221,9 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     elif git.is_repo(str(repo)):
         branch = git.start_branch(str(repo))
         if branch:
-            # commit pre-existing dirty work on its own so every later checkpoint is the coder's alone
-            git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run")
+            # commit pre-existing dirty work on its own so every later checkpoint is the coder's alone;
+            # a commit that fails here would fail every pass, so stop before paying for one
+            git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run", strict=True)
             base_sha = git.head(str(repo))
     else:
         print(f"[git] {repo} is not a git repository — running without checkpoints or rollback")
@@ -240,13 +255,18 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     except BaseException as exc:
         runlog.log("aborted", error=f"{type(exc).__name__}: {exc}", usage=runlog.totals())
         print(f"\nAborted: {type(exc).__name__}: {exc}\nPlan: {_tally(str(plan))}\nUsage: {runlog.summary()}")
-        if isinstance(exc, (RuntimeError, TimeoutError)):  # an agent failed: the message says it all
-            raise SystemExit(1)
+        if isinstance(exc, (RuntimeError, TimeoutError)):  # an agent or a checkpoint failed: the message says it all
+            raise SystemExit(EXIT_FAILED)
         raise
 
+    finished = bool(result["tests_passed"] and result["audit_clean"] and plan_done(str(plan)))
+    blocked = plan_blocked(str(plan))
+    caveats = ([f"BLOCKED: {', '.join(blocked)}"] if blocked else []) + \
+        (["no gate ran — green checked nothing"] if not gates else [])
+    code = EXIT_FAILED if not finished else EXIT_NEEDS_REVIEW if caveats else EXIT_CLEAN
     runlog.log("finish", iterations=result["iteration"], tests_passed=result["tests_passed"],
                audit_clean=result["audit_clean"], errors=result["errors"], problems=result["problems"],
-               usage=runlog.totals())
+               clean=code == EXIT_CLEAN, exit_code=code, caveats=caveats, usage=runlog.totals())
     print(f"\nFinished after {result['iteration']} iteration(s), "
           f"tests_passed={result['tests_passed']}, audit_clean={result['audit_clean']}\nPlan: {_tally(str(plan))}")
     print(f"Usage: {runlog.summary()}")
@@ -256,7 +276,9 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
         print(json.dumps({"errors": result["errors"], "problems": result["problems"]}, indent=2))
     if result.get("idle_passes", 0) >= IDLE_LIMIT:
         print(f"Stopped early: {IDLE_LIMIT} coder passes in a row changed nothing. Read the last coder output above.")
-    return bool(result["tests_passed"] and result["audit_clean"] and plan_done(str(plan)))
+    if finished and caveats:
+        print("Needs a human look (exit 2): " + "; ".join(caveats))
+    return code
 
 
 if __name__ == "__main__":

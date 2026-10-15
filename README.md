@@ -301,9 +301,21 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
 
 `mae` sale con código 0 solo si la cola queda cerrada, los gates en verde y la auditoría
-limpia; 1 en cualquier otro caso (útil en CI), 130 con Ctrl-C. Antes de arrancar comprueba
-que las CLIs de cada rol y las herramientas de los gates configurados existen: un gate
-configurado cuya herramienta falta es un error, no un aprobado silencioso.
+limpia; 2 si todo eso se cumple pero hace falta que una persona mire (hay unidades
+`BLOCKED`, o no se ejecutó ningún gate y el verde no comprobó nada); 1 en cualquier otro
+caso (útil en CI), 130 con Ctrl-C. Antes de arrancar comprueba que las CLIs de cada rol y
+las herramientas de los gates configurados existen (un gate relativo como
+`scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
+pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
+`index.lock` huérfano. Un gate configurado cuya herramienta falta es un error, no un
+aprobado silencioso, y uno que desaparece o se pasa de tiempo a mitad de la ejecución
+cuenta como rojo. Si un commit de checkpoint falla (identidad de git, un hook, la firma)
+la ejecución se detiene en vez de seguir sin puntos de rollback.
+
+Después de cada pasada del coder el tester también revisa el bloque de estado: un `-->`
+dentro de una nota, un segundo bloque, un estado mal escrito o una unidad que estaba
+abierta al empezar y ha desaparecido ponen la iteración en rojo, para que el coder lo
+arregle en vez de que la unidad se pierda en silencio.
 
 Una sola ejecución por archivo de plan: una segunda sale inmediatamente en vez de
 mezclar sus escrituras en el mismo bloque de estado.

@@ -170,9 +170,9 @@ def test_a_missing_cli_or_gate_tool_fails_before_the_run(monkeypatch):
         _agents(parser, {}, [])  # default reviewer is codex
     assert _agents(parser, {}, ["reviewer=claude", "auditor=claude"])["reviewer"] == "claude"
     # a default gate whose tool is missing is dropped; a configured one is an error, not a silent pass
-    assert [g["cmd"][0] for g in _check_gates(parser, build_gates(None), False)] == ["pytest"]
+    assert [g["cmd"][0] for g in _check_gates(parser, build_gates(None), False, Path("."))] == ["pytest"]
     with pytest.raises(SystemExit):
-        _check_gates(parser, build_gates(["npm test"]), True)
+        _check_gates(parser, build_gates(["npm test"]), True, Path("."))
 
 
 def test_max_iterations_must_be_a_positive_integer():

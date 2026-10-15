@@ -71,8 +71,17 @@ class Run:
         """SIGINT, like Ctrl-C: the engine kills its agent, logs `aborted` and keeps its checkpoints."""
         if not self.running():
             return False
-        os.killpg(os.getpgid(self.proc.pid), signal.SIGINT)
+        # the engine alone, not its process group: a git commit or gate caught mid-write by the signal
+        # would leave index.lock behind; the engine stops its own children on KeyboardInterrupt
+        os.kill(self.proc.pid, signal.SIGINT)
         return True
+
+    def kill(self) -> None:
+        if self.running():
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+            except OSError:
+                self.proc.kill()
 
     def output(self, since: int) -> dict:
         with self.lock:
@@ -184,8 +193,10 @@ def runs(repo: Path) -> list[dict]:
             elif kind == "gate":
                 summary["iterations"] = max(summary["iterations"], event.get("iteration", 0))
             elif kind == "finish":
-                clean = event.get("tests_passed") and event.get("audit_clean")
-                summary.update(status="clean" if clean else "finished with issues", ended=event.get("ts"))
+                # older logs have no exit_code; there clean meant green + audited (the plan check came later)
+                code = event.get("exit_code", 0 if event.get("tests_passed") and event.get("audit_clean") else 1)
+                status = {0: "clean", 2: "needs review"}.get(code, "finished with issues")
+                summary.update(status=status, caveats=event.get("caveats") or [], ended=event.get("ts"))
             elif kind == "aborted":
                 summary.update(status="aborted", error=event.get("error"), ended=event.get("ts"))
         out.append(summary)
@@ -255,11 +266,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return self._send(403, {"error": "missing or wrong token — open the URL `mae-ui` printed"})
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
-        body = {}
-        if method == "POST":
-            length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         try:
+            body = {}
+            if method == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}") if length > 0 else {}
+                if not isinstance(body, dict):
+                    raise ValueError("the request body must be a JSON object")
             return self._send(200, self._api(method, url.path[5:], query, body))
         except (ValueError, OSError) as exc:
             return self._send(400, {"error": str(exc)})
@@ -360,7 +373,11 @@ def main():
         pass
     finally:
         if RUN.stop():
-            RUN.proc.wait(timeout=30)
+            try:
+                RUN.proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print("engine did not stop within 30s — killing it", flush=True)
+                RUN.kill()
         server.server_close()
 
 
