@@ -1,4 +1,5 @@
-"""Thin wrappers around the `claude` and `codex` CLIs (already authenticated locally)."""
+"""Thin wrappers around the `claude` and `codex` CLIs (already authenticated locally), plus the free-model
+runners in engine/llm.py."""
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engine import runlog
+from engine.llm import run_api, run_ollama
 
 # Errors that clear on their own; the reset time may be a unix epoch or "resets <ISO> UTC".
 RETRYABLE = re.compile(r"limit reached|rate.?limit|overloaded", re.IGNORECASE)
@@ -248,14 +250,26 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
             os.unlink(schema_file)
 
 
-# Which CLI plays which role is configuration; every runner takes the same arguments.
-RUNNERS = {"claude": run_claude, "codex": run_codex}
+# Which runner plays which role is configuration; every runner takes the same arguments.
+RUNNERS = {"claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api}
+# Runners that call a model over HTTP instead of a CLI; they take an optional model: "ollama:qwen2.5-coder:14b".
+MODEL_RUNNERS = ("ollama", "api")
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
+FREE_AGENTS = dict.fromkeys(DEFAULT_AGENTS, "ollama")  # `mae --free`: no subscription, no key
+
+
+def split_agent(agent: str) -> tuple[str, str]:
+    """"ollama:qwen2.5-coder:14b" -> ("ollama", "qwen2.5-coder:14b"); "claude" -> ("claude", "")."""
+    runner, _, model = agent.partition(":")
+    return runner.strip(), model.strip()
 
 
 def run_agent(agent: str, prompt: str, cwd: str, label: str, **kwargs) -> str:
+    name, model = split_agent(agent)
     try:
-        runner = RUNNERS[agent]
+        runner = RUNNERS[name]
     except KeyError:
         raise SystemExit(f"unknown agent {agent!r} for {label} — known: {', '.join(sorted(RUNNERS))}")
+    if model:
+        kwargs["model"] = model
     return runner(prompt, cwd, label=label, **kwargs)

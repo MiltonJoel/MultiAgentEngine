@@ -7,8 +7,8 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from engine import git, prompts, runlog
-from engine.cli import DEFAULT_AGENTS, RUNNERS
+from engine import git, llm, prompts, runlog
+from engine.cli import DEFAULT_AGENTS, FREE_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
 from engine.graph import (
     IDLE_LIMIT,
     MAX_ITERATIONS,
@@ -54,7 +54,7 @@ def _repo_config(repo: Path) -> dict:
         raise SystemExit(f"{path}: {exc}")
     if not isinstance(config, dict):
         raise SystemExit(f"{path}: must hold a JSON object")
-    for key, kind in (("agents", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str)):
+    for key, kind in (("agents", dict), ("llm", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str)):
         if key in config and not isinstance(config[key], kind):
             raise SystemExit(f"{path}: \"{key}\" must be a {kind.__name__}")
     if not all(isinstance(d, str) for d in config.get("allow_dirs", [])):
@@ -79,23 +79,31 @@ def _doc(parser: argparse.ArgumentParser, flag: str | None, configured: str | No
     return path
 
 
-def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str]) -> dict[str, str]:
-    """Role -> CLI, validated now so a typo fails before the run starts."""
-    agents = {**DEFAULT_AGENTS, **config}
+def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str], free: bool = False) -> dict[str, str]:
+    """Role -> runner, validated now so a typo or a missing CLI/model fails before the run starts.
+    --free binds every role to the local Ollama model; config and --agent still override single roles."""
+    agents = {**(FREE_AGENTS if free else DEFAULT_AGENTS), **config}
     for flag in flags:
         role, _, cli = flag.partition("=")
         if not cli:
             parser.error(f"--agent expects ROLE=CLI, got {flag!r}")
         agents[role.strip()] = cli.strip()
-    for role, cli in agents.items():
+    for role, agent in agents.items():
+        cli, model = split_agent(agent)
         if role not in DEFAULT_AGENTS:
             parser.error(f"unknown role {role!r} — known: {', '.join(DEFAULT_AGENTS)}")
         if cli not in RUNNERS:
             parser.error(f"unknown CLI {cli!r} for {role} — known: {', '.join(sorted(RUNNERS))}")
-    for cli in set(agents.values()):
-        if not shutil.which(cli):
-            parser.error(f"the {cli} CLI is not on PATH — install and log in, or bind its roles elsewhere "
-                         f"with --agent ROLE=CLI")
+        if model and cli not in MODEL_RUNNERS:
+            parser.error(f"{agent!r} for {role}: only {', '.join(MODEL_RUNNERS)} take a model")
+    for agent in sorted(set(agents.values())):
+        cli, model = split_agent(agent)
+        if cli in MODEL_RUNNERS:
+            if why := llm.check(cli, model):
+                parser.error(why)
+        elif not shutil.which(cli):
+            parser.error(f"the {cli} CLI is not on PATH — install and log in, bind its roles elsewhere "
+                         f"with --agent ROLE=CLI, or use a free local model with --free")
     return agents
 
 
@@ -149,8 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Gate command run in the repo after every coder pass (repeatable; replaces the "
                              "config list). --gate '' disables all gates. (default: pytest, then ruff)")
     parser.add_argument("--agent", action="append", default=[], metavar="ROLE=CLI",
-                        help=f"Bind a role to a CLI (repeatable). Roles: {', '.join(DEFAULT_AGENTS)}. "
-                             f"CLIs: {', '.join(sorted(RUNNERS))}.")
+                        help=f"Bind a role to a runner (repeatable). Roles: {', '.join(DEFAULT_AGENTS)}. "
+                             f"Runners: {', '.join(sorted(RUNNERS))}; ollama and api take a model, "
+                             f"e.g. coder=ollama:qwen2.5-coder:14b.")
+    parser.add_argument("--free", action="store_true",
+                        help=f"Run every role on a free local model through Ollama ({llm.DEFAULT_MODEL}) — "
+                             "no subscription or API key")
     parser.add_argument("--max-iterations", type=int, metavar="N",
                         help=f"Ceiling on coder passes; must exceed the number of open units (default: {MAX_ITERATIONS})")
     parser.add_argument("--log-dir", metavar="DIR", help=f"JSONL run log directory (default: <repo>/{MAE_DIR}/runs)")
@@ -177,7 +189,11 @@ def main():
         gates = _check_gates(parser, build_gates(configured), configured is not None, repo)
     except SystemExit as exc:
         parser.error(str(exc))
-    agents = _agents(parser, config.get("agents", {}), args.agent)
+    try:
+        llm.configure(config.get("llm"))
+    except SystemExit as exc:
+        parser.error(str(exc))
+    agents = _agents(parser, config.get("agents", {}), args.agent, args.free)
     max_iterations = _max_iterations(parser, args.max_iterations, config.get("max_iterations"))
     allow_dirs = []
     for raw in [*args.allow_dir, *config.get("allow_dirs", [])]:
