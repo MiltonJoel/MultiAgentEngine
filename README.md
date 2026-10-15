@@ -16,7 +16,7 @@ Una sesión completa, de cero a una rama con el trabajo hecho. Copia y pega:
 
 ```bash
 # 1. Instalar el motor (una sola vez)
-cd ~/Desktop/MultiAgentEngine && pip install -e .
+pipx install git+https://github.com/MiltonJoel/MultiAgentEngine.git
 
 # 2. Preparar el proyecto que quieres construir
 mkdir -p ~/code/myproject/.mae && cd ~/code/myproject
@@ -69,10 +69,28 @@ mae
 
 ### 1. Instalar una vez
 
+Necesitas Python 3.10 o superior. No hace falta nada más del equipo de quien escribió
+el motor: todo lo que usa está en este repositorio.
+
+Solo para usarlo (deja `mae` y `mae-ui` en el `PATH`):
+
 ```bash
-cd MultiAgentEngine
-pip install -e .          # o: pipx install -e .  → deja `mae` en el PATH
+pipx install git+https://github.com/MiltonJoel/MultiAgentEngine.git
 ```
+
+Para modificarlo, clónalo en cualquier carpeta y usa un entorno virtual:
+
+```bash
+git clone https://github.com/MiltonJoel/MultiAgentEngine.git
+cd MultiAgentEngine
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"                               # el motor + pytest y ruff
+python -m pytest -q                                   # debería pasar todo
+```
+
+Si `pip install` falla al descargar `setuptools` (sin red o detrás de un proxy), instala
+`setuptools` en el entorno y repite con `pip install -e . --no-build-isolation`. Con
+acceso normal a PyPI no hace falta.
 
 Comprueba las herramientas que usa:
 
@@ -584,8 +602,12 @@ MultiAgentEngine/
 ```
 
 ```bash
-python3 -m pytest -q && ruff check .
+pip install -e ".[dev]"
+python -m pytest -q && ruff check .
 ```
+
+GitHub Actions (`.github/workflows/tests.yml`) repite esto en un clon limpio con Python
+3.10 a 3.13 en cada push y pull request.
 
 Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
 apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.
