@@ -5,6 +5,9 @@ description = "LangGraph loop driving the claude and codex CLIs against a repo u
 requires-python = ">=3.10"
 dependencies = ["langgraph>=1.2,<2"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff"]
+
 [project.scripts]
 mae = "engine.main:main"
 mae-ui = "engine.ui:main"

@@ -51,7 +51,8 @@ class Run:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(repo), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 text=True, encoding="utf8", errors="replace", bufsize=1, start_new_session=True,
-                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(
+                    filter(None, [str(Path(__file__).resolve().parent.parent), os.environ.get("PYTHONPATH")]))},
             )
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
