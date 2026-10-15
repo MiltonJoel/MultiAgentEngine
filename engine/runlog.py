@@ -12,6 +12,9 @@ def start(log_dir: str | Path) -> Path:
     global _sink
     directory = Path(log_dir)
     directory.mkdir(parents=True, exist_ok=True)
+    ignore = directory / ".gitignore"
+    if not ignore.exists():  # logs must never ride along in a checkpoint commit
+        ignore.write_text("*\n", encoding="utf8")
     path = directory / f"{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S')}.jsonl"
     _sink = path.open("a", encoding="utf8", buffering=1)
     return path

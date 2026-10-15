@@ -1,8 +1,13 @@
 # MultiAgentEngine
 
-Un bucle de LangGraph que dirige dos agentes de programación — la CLI `claude` y la
-CLI `codex` — contra un repositorio hasta que una especificación de arquitectura
-queda implementada, testeada y auditada.
+Un bucle de LangGraph que dirige agentes de programación — la CLI `claude`, la CLI
+`codex` o un **modelo gratuito** (local con Ollama, o cualquier API compatible con
+OpenAI) — contra un repositorio hasta que una especificación de arquitectura queda
+implementada, testeada y auditada.
+
+**No necesitas ninguna suscripción de pago.** Con `mae --free` los tres roles usan un
+modelo local a través de [Ollama](https://ollama.com): sin cuenta, sin clave, sin coste.
+Ver [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
 
 Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, los
 valida con un paso de tests determinista, mantiene la cola de trabajo al día y se
@@ -16,7 +21,7 @@ Una sesión completa, de cero a una rama con el trabajo hecho. Copia y pega:
 
 ```bash
 # 1. Instalar el motor (una sola vez)
-cd ~/Desktop/MultiAgentEngine && pip install -e .
+pipx install git+https://github.com/MiltonJoel/MultiAgentEngine.git
 
 # 2. Preparar el proyecto que quieres construir
 mkdir -p ~/code/myproject/.mae && cd ~/code/myproject
@@ -46,6 +51,7 @@ Variantes habituales:
 
 ```bash
 mae --repo ~/code/myproject                              # desde cualquier carpeta
+mae --free                                               # todo gratis, con un modelo local (Ollama)
 mae --agent reviewer=claude --agent auditor=claude       # solo claude, sin codex
 mae --gate "npm test" --gate "eslint . -f json"          # proyecto JavaScript
 mae --gate ''                                            # sin tests ni lint
@@ -69,26 +75,52 @@ mae
 
 ### 1. Instalar una vez
 
+Necesitas Python 3.10 o superior. No hace falta nada más del equipo de quien escribió
+el motor: todo lo que usa está en este repositorio.
+
+Solo para usarlo (deja `mae` y `mae-ui` en el `PATH`):
+
 ```bash
-cd MultiAgentEngine
-pip install -e .          # o: pipx install -e .  → deja `mae` en el PATH
+pipx install git+https://github.com/MiltonJoel/MultiAgentEngine.git
 ```
+
+Para modificarlo, clónalo en cualquier carpeta y usa un entorno virtual:
+
+```bash
+git clone https://github.com/MiltonJoel/MultiAgentEngine.git
+cd MultiAgentEngine
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"                               # el motor + pytest y ruff
+python -m pytest -q                                   # debería pasar todo
+```
+
+Si `pip install` falla al descargar `setuptools` (sin red o detrás de un proxy), instala
+`setuptools` en el entorno y repite con `pip install -e . --no-build-isolation`. Con
+acceso normal a PyPI no hace falta.
 
 Comprueba las herramientas que usa:
 
 ```bash
-which mae claude codex pytest ruff git
+which mae pytest ruff git
+which ollama              # opción gratuita
+which claude codex        # opción de pago (suscripción o clave)
 ```
+
+Necesitas **al menos un** proveedor de modelo. Cualquiera de estos sirve para cualquier
+rol, y puedes mezclarlos:
 
 | Herramienta | Rol | Notas |
 |---|---|---|
-| CLI `claude`, con sesión iniciada | el programador (coder) | en el `PATH`, ya autenticada |
-| CLI `codex`, con sesión iniciada | revisor y auditor | en el `PATH`, ya autenticada — o asigna esos roles a `claude` |
+| [Ollama](https://ollama.com) con un modelo descargado | cualquiera (`--free` los usa para todos) | **gratis**, local, sin cuenta ni clave: `ollama pull qwen2.5-coder:7b` |
+| Un endpoint compatible con OpenAI con plan gratuito | cualquiera (runner `api`) | p. ej. OpenRouter (modelos `:free`), Groq, Google AI Studio; clave en `MAE_API_KEY` |
+| CLI `claude`, con sesión iniciada | el programador (coder) por defecto | de pago; en el `PATH`, ya autenticada |
+| CLI `codex`, con sesión iniciada | revisor y auditor por defecto | de pago; en el `PATH`, ya autenticada — o asigna esos roles a otro |
 | `pytest` | gate de tests por defecto | se ejecuta dentro del repo **objetivo**; cámbialo con `--gate` |
 | `ruff` | gate de lint por defecto | se omite si no está instalado. **No uses la versión de snap** — ver [Solución de problemas](#solución-de-problemas) |
 | `git` | checkpoints en el repo objetivo | opcional — sin él no hay punto de restauración |
 
-Aquí no se configuran claves de API. El motor usa CLIs en las que ya iniciaste sesión.
+Con Ollama o las CLIs no se configura ninguna clave de API. Solo el runner `api` usa una,
+y la lee de una variable de entorno, nunca de un archivo del repo.
 
 ### 2. Pon dos archivos en el repo que quieres construir
 
@@ -187,6 +219,30 @@ Ese es todo el flujo diario: **edita el bloque, ejecuta `mae`, revisa la rama.**
 
 ---
 
+## Interfaz web — `mae-ui`
+
+Todo lo anterior también se hace desde el navegador:
+
+```bash
+mae-ui --repo ~/code/myproject          # abre http://127.0.0.1:8765/?token=…
+mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirla
+```
+
+- **Mission** — el grafo coder → tester → reviewer/auditor con el nodo activo en vivo,
+  pasadas, errores de los gates, resultado de la auditoría y coste; elegir la CLI de cada
+  rol, gates, tope de pasadas y `--no-git`; lanzar y detener (detener = Ctrl-C: se
+  conservan los checkpoints); consola en vivo filtrable por agente.
+- **Queue & spec** — las unidades del bloque `ENGINE-STATUS` en columnas por estado:
+  añadir, cambiar de estado o borrar sin tocar el resto del plan; editores de `spec.md`,
+  `plan.md` y `.mae/config.json` (<kbd>Ctrl</kbd>+<kbd>S</kbd> guarda).
+- **History** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
+  los commits de checkpoint de la rama, con el diff de cada uno.
+
+La UI lanza el mismo `mae` como subproceso, una ejecución a la vez. Escucha solo en
+`127.0.0.1` y cada arranque genera un token que la API exige: abre la URL que imprime.
+
+---
+
 ## Los dos archivos que son tuyos
 
 Viven **en el repo objetivo**, no en este. El motor no incluye documentos propios, así
@@ -244,6 +300,8 @@ Reglas importantes:
 - El orden no importa — el bloque es un índice, no una secuencia.
 - Una línea que no se puede interpretar **se avisa al arrancar, no se descarta en silencio**.
 - Borrar `<!-- ENGINE-STATUS` o `-->` borra la memoria del motor sobre lo que está hecho.
+- Una línea `TODO — audit: …` la reabrió el auditor; la nota describe el problema. No la
+  pases a `DONE` a mano sin arreglarlo: la siguiente auditoría la volvería a reabrir.
 
 ### Añadir y cambiar trabajo
 
@@ -269,10 +327,28 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--plan FILE` | cola de trabajo (por defecto `<repo>/.mae/plan.md`) |
 | `--allow-dir DIR` | directorio extra que el coder puede leer; repetible |
 | `--gate CMD` | comando de validación tras cada pasada del coder; repetible, reemplaza la lista del config; `--gate ''` desactiva todos los gates |
-| `--agent ROLE=CLI` | asigna un rol a una CLI, p. ej. `--agent reviewer=claude`; repetible |
+| `--agent ROLE=RUNNER` | asigna un rol a `claude`, `codex`, `ollama` o `api`, p. ej. `--agent reviewer=claude`; `ollama` y `api` aceptan modelo: `--agent coder=ollama:qwen2.5-coder:14b`; repetible |
+| `--free` | todos los roles con el modelo local gratuito de Ollama; `--agent` y `"agents"` siguen cambiando roles sueltos |
 | `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
 | `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
+
+`mae` sale con código 0 solo si la cola queda cerrada, los gates en verde y la auditoría
+limpia; 2 si todo eso se cumple pero hace falta que una persona mire (hay unidades
+`BLOCKED`, o no se ejecutó ningún gate y el verde no comprobó nada); 1 en cualquier otro
+caso (útil en CI), 130 con Ctrl-C. Antes de arrancar comprueba que las CLIs de cada rol y
+las herramientas de los gates configurados existen (un gate relativo como
+`scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
+pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
+`index.lock` huérfano. Un gate configurado cuya herramienta falta es un error, no un
+aprobado silencioso, y uno que desaparece o se pasa de tiempo a mitad de la ejecución
+cuenta como rojo. Si un commit de checkpoint falla (identidad de git, un hook, la firma)
+la ejecución se detiene en vez de seguir sin puntos de rollback.
+
+Después de cada pasada del coder el tester también revisa el bloque de estado: un `-->`
+dentro de una nota, un segundo bloque, un estado mal escrito o una unidad que estaba
+abierta al empezar y ha desaparecido ponen la iteración en rojo, para que el coder lo
+arregle en vez de que la unidad se pierda en silencio.
 
 Una sola ejecución por archivo de plan: una segunda sale inmediatamente en vez de
 mezclar sus escrituras en el mismo bloque de estado.
@@ -302,6 +378,7 @@ Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen pr
     "eslint . -f json"
   ],
   "agents": {"reviewer": "claude", "auditor": "claude"},
+  "llm": {"ollama": {"model": "qwen2.5-coder:14b"}},
   "max_iterations": 20,
   "allow_dirs": ["~/code/reference-lib"]
 }
@@ -311,7 +388,10 @@ Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen pr
 - `gates` — se ejecutan en orden. Cada entrada es un comando (código de salida 0 = pasa),
   o `{"cmd", "ok_codes"}` cuando otros códigos también cuentan como pasar. `[]` = sin
   gates. Si se omite = pytest y luego ruff.
-- `agents` — los roles son `coder`, `reviewer`, `auditor`; las CLIs son `claude`, `codex`.
+- `agents` — los roles son `coder`, `reviewer`, `auditor`; los runners son `claude`,
+  `codex`, `ollama` y `api` (estos dos con modelo opcional: `"ollama:llama3.1:8b"`).
+- `llm` — dónde están los modelos gratuitos; ver
+  [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
 
 Un gate pasado con `--gate` solo acepta el código de salida 0. pytest sale con 5 cuando
 no encuentra tests, así que en un repo todavía sin tests usa la forma del config
@@ -322,29 +402,34 @@ no encuentra tests, así que en un repo todavía sin tests usa la forma del conf
 ## El bucle
 
 ```
-                   ┌──────────────────────────────────────────┐
-                   ↓                                          │
- spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER ─┘
+ spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER → CODER
                                      │
                                      sí
                                      ↓
-                            ¿quedan elementos abiertos? ── sí → CODER
+                     ¿quedan elementos abiertos? ── sí → CODER
                                      │
                                      no
                                      ↓
-                              ¿ya auditado? ── no → AUDITOR ── ¿hallazgos? ── sí → CODER
-                                     │                                  │
-                                     sí                                 no
-                                     ↓                                  ↓
-                                    FIN ←───────────────────────────────┘
+                      ¿última auditoría limpia? ── sí → FIN
+                                     │
+                                     no
+                                     ↓
+                                  AUDITOR ── ¿hallazgos? ── no → FIN
+                                                  │
+                                                  sí → reabre esas unidades (TODO) → CODER
 ```
 
-Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
-bucle termina en cuanto no queda nada abierto.
+Si dos pasadas seguidas del coder no cambian ningún archivo (con git activo), la ejecución
+se detiene en vez de seguir pagando por pasadas vacías.
 
-**CODER** (`claude`, puede editar archivos, 90 min de presupuesto) — implementa los
-elementos abiertos y pasa cada línea a `DONE` en cuanto su código está escrito, así una
-sesión interrumpida no pierde nada. No ejecuta los tests. Es el único nodo que escribe.
+Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
+bucle termina en cuanto no queda nada abierto y la auditoría sale limpia.
+
+**CODER** (`claude`, puede editar archivos y ejecutar comandos, 90 min de presupuesto) — implementa los
+elementos abiertos, escribe tests para cada uno y ejecuta solo esos tests; pasa la línea a
+`DONE` cuando pasan, así una sesión interrumpida no pierde nada. Lo que necesita datos,
+red, credenciales o una decisión humana va a `BLOCKED` con el motivo, nunca a `DONE`. La
+suite completa la ejecuta el TESTER. Es el único agente que escribe código.
 
 **TESTER** (sin LLM, gratis) — ejecuta los gates en orden y convierte su salida en
 errores estructurados, con un máximo de 20:
@@ -368,16 +453,84 @@ las causas raíz en JSON:
                "suggested_fix": "qué cambiar"}]}
 ```
 
-**AUDITOR** (`codex`, solo lectura) — se ejecuta **una vez por ejecución**, cuando los
-tests pasan y la cola está cerrada. El coder se corrige a sí mismo, así que el auditor
-lee el diff de toda la ejecución contra la especificación y reporta unidades marcadas
-`DONE` que están a medias, contradicen la especificación o no tienen test para un
-comportamiento requerido. Se limita a las unidades que estaban abiertas al empezar la
-ejecución, así que una adición pequeña no vuelve a auditarlo todo. Los hallazgos vuelven
-al coder.
+**AUDITOR** (`codex`, solo lectura) — se ejecuta cuando los tests pasan y la cola está
+cerrada. El coder se corrige a sí mismo, así que el auditor lee el diff de toda la
+ejecución contra la especificación y reporta unidades marcadas `DONE` que están a medias,
+contradicen la especificación, no tienen test para un comportamiento requerido o afirman
+un criterio de salida imposible de cumplir sin datos. Se limita a las unidades que estaban
+abiertas al empezar la ejecución.
+
+Cada hallazgo indica su unidad, y **el motor la reabre**: la línea pasa a
+`TODO — audit: <hallazgo>`. El coder la arregla, los tests vuelven a pasar y **la
+auditoría se repite** hasta salir limpia. Solo una auditoría sin hallazgos termina la
+ejecución. Las unidades `BLOCKED` no se reabren.
 
 Los diffs enviados al revisor y al auditor se limitan a 20 000 caracteres, con `--stat`
 primero.
+
+---
+
+## Modelos gratuitos — sin suscripción
+
+El motor trae su propio agente (`engine/llm.py`, solo biblioteca estándar) que habla con
+cualquier endpoint compatible con OpenAI y le da al modelo las mismas herramientas que
+tienen las CLIs: listar, leer y buscar archivos y, para el coder, escribir y editar
+archivos y ejecutar comandos — así puede correr los tests que `DONE` exige. El revisor y
+el auditor solo reciben las herramientas de lectura. Fuera del repo solo puede tocar los
+directorios de la especificación, del plan y de `--allow-dir`.
+
+### Local con Ollama (recomendado, gratis)
+
+```bash
+# 1. Instala Ollama: https://ollama.com/download (Linux: curl -fsSL https://ollama.com/install.sh | sh)
+# 2. Descarga un modelo con soporte de herramientas
+ollama pull qwen2.5-coder:7b          # ~5 GB; con 16 GB+ de RAM prueba qwen2.5-coder:14b
+# 3. Dale contexto suficiente (el valor por defecto de Ollama corta prompts largos)
+OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+# 4. Ejecuta
+mae --free
+```
+
+Por defecto usa `qwen2.5-coder:7b` en `http://localhost:11434/v1`. Para cambiarlo:
+
+```bash
+mae --free --agent coder=ollama:qwen2.5-coder:14b      # un modelo mayor solo para el coder
+export MAE_OLLAMA_MODEL=llama3.1:8b                    # otro modelo por defecto
+export MAE_OLLAMA_URL=http://otra-maquina:11434/v1     # Ollama en otra máquina
+```
+
+o en `.mae/config.json`: `"llm": {"ollama": {"url": "...", "model": "..."}}`. Antes de
+arrancar, `mae` comprueba que Ollama responde y que el modelo está descargado, y si no
+te dice qué ejecutar.
+
+### Una API gratuita (runner `api`)
+
+Cualquier servicio compatible con OpenAI. Con un plan gratuito no pagas nada; ten en
+cuenta sus límites por minuto (el motor reintenta los 429 respetando `Retry-After`).
+
+```json
+{
+  "agents": {"coder": "api", "reviewer": "api", "auditor": "ollama"},
+  "llm": {"api": {"url": "https://openrouter.ai/api/v1",
+                  "model": "qwen/qwen-2.5-coder-32b-instruct:free",
+                  "key_env": "OPENROUTER_API_KEY"}}
+}
+```
+
+`key_env` es el nombre de la variable de entorno con la clave (por defecto
+`MAE_API_KEY`); la clave nunca va en el archivo. También sirven `MAE_API_URL` y
+`MAE_API_MODEL`.
+
+### Qué esperar
+
+Un modelo local de 7–14 B es mucho más lento y menos capaz que `claude` o `codex`:
+funciona bien en unidades pequeñas y bien especificadas, y le cuesta más con cambios
+grandes. Divide el plan en unidades pequeñas, sube `--max-iterations`, o mezcla: un
+modelo gratuito para revisor y auditor y uno mejor para el coder. El coste que se
+registra para estos runners es 0; los tokens sí se cuentan.
+
+En `mae-ui`, cada rol tiene un selector con `ollama (free, local)` y `api`, un campo para
+el modelo, y el botón **Use free models for every role**.
 
 ---
 
@@ -390,7 +543,7 @@ mae --agent reviewer=claude --agent auditor=claude    # solo claude, sin necesid
 ```
 
 Todas las funciones que lanzan una CLI aceptan los mismos argumentos (`write`,
-`add_dirs`, `schema`, `timeout`), así que añadir una tercera CLI es una función más una
+`add_dirs`, `schema`, `timeout`), así que añadir otra CLI es una función más una
 entrada en `RUNNERS` en `engine/cli.py`. Dos limitaciones de las que el motor avisa:
 `codex` no tiene `--add-dir`, y `claude` no tiene esquema de salida, así que se le pide
 JSON en el prompt.
@@ -418,6 +571,9 @@ los diffs del agente:
 git -C <repo> diff HEAD~1          # lo que hizo la última pasada
 git -C <repo> reset --hard <sha>   # volver a cualquier pasada
 ```
+
+Los checkpoints nunca incluyen `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`__pycache__/` ni `.mae/runs/`, aunque el `.gitignore` del repo los olvide.
 
 ¿No es un repo git? La ejecución funciona igual, sin protección, y lo avisa. `--no-git`
 lo desactiva a propósito.
@@ -452,7 +608,7 @@ que la caché funciona en la línea de progreso — un `cache_read` alto es lo q
 
 Solo las respuestas finales de los agentes entran en el estado del grafo, nunca sus
 transcripciones; el tester no cuesta nada; el revisor solo se ejecuta cuando algo falla
-y el auditor solo una vez.
+y el auditor solo con la cola cerrada (repitiéndose hasta salir limpio).
 
 Si una CLI se detiene por un límite de uso, el motor espera hasta la hora de reinicio
 que aparece en su salida (30 min si no hay ninguna), hasta 4 veces por llamada:
@@ -477,12 +633,20 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 | `has nothing left open — every item is DONE or BLOCKED` | Funciona como debe. Añade una línea `TODO` o reabre una. |
 | `WARNING: unreadable status line, it will be ignored` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
 | Escribiste una sección nueva pero no se ejecuta nada | La prosa no participa en el enrutamiento. Añade una línea `<nombre>: TODO` dentro del bloque. |
-| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. CLIs: claude, codex. |
+| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. Runners: claude, codex, ollama, api. |
+| `the claude CLI is not on PATH` y no tienes suscripción | Usa `mae --free` (Ollama) o el runner `api` con un plan gratuito. |
+| `Ollama is not reachable at http://localhost:11434/v1` | Ollama no está instalado o no está corriendo: instálalo y ejecuta `ollama serve`. |
+| `Ollama has no model 'qwen2.5-coder:7b'` | `ollama pull qwen2.5-coder:7b`, o elige uno que ya tengas con `--agent ROLE=ollama:<modelo>`. |
+| El modelo local responde sin usar herramientas o ignora el plan | Contexto demasiado corto: arranca Ollama con `OLLAMA_CONTEXT_LENGTH=32768`, o usa un modelo mayor. |
 | `another run already holds <plan>` | Hay otra ejecución sobre ese plan. Espera o termínala. |
 | El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
 | `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
 | El coder no actualizó el plan | No podía acceder al archivo. Los directorios de spec y plan se permiten automáticamente; cualquier otro necesita `--allow-dir`. |
+| El coder deja las unidades en `IN_PROGRESS` porque "no puede ejecutar pytest" | Versión anterior del motor: `claude -p` en `acceptEdits` rechaza Bash. Ahora el coder recibe `--allowedTools Bash`. |
+| `Stopped early: 2 coder passes in a row changed nothing` | El coder no avanza. Lee su última salida: suele pedir algo (permiso, dato, decisión). |
 | El bucle termina con unidades abiertas | Llegó a `--max-iterations`. Súbelo por encima del número de unidades abiertas y vuelve a ejecutar — continúa donde lo dejó. |
+| `[auditor] reopened: …` | El auditor encontró problemas en unidades `DONE`; el motor las volvió a `TODO` con el hallazgo como nota. Es lo esperado: el coder las arregla y se audita otra vez. |
+| Termina en el tope con `audit_clean=False` | El auditor sigue encontrando problemas. Lee las notas `audit:` del plan y los `problems` impresos al final; corrige la especificación si pide algo imposible, o marca la unidad `BLOCKED`. |
 
 ---
 
@@ -507,10 +671,13 @@ MultiAgentEngine/
 │   ├── graph.py         parseo del bloque de estado, enrutamiento, grafo de LangGraph
 │   ├── state.py         GraphState
 │   ├── cli.py           funciones para claude/codex (RUNNERS), esperas por límite de uso
+│   ├── llm.py           agente propio para modelos gratuitos (Ollama / API compatible con OpenAI)
 │   ├── git.py           rama por ejecución, checkpoints, diffs
 │   ├── prompts.py       carga de prompts con personalización por repo
 │   ├── prompts/         coder.md, reviewer.md, auditor.md
 │   ├── runlog.py        log JSONL, totales de coste y tokens
+│   ├── ui.py            servidor de `mae-ui` (stdlib), API con token
+│   ├── ui.html          la página de `mae-ui`, sin dependencias
 │   └── nodes/
 │       ├── coder.py     agente de implementación
 │       ├── tester.py    gates deterministas y parseo de su salida
@@ -518,12 +685,18 @@ MultiAgentEngine/
 └── tests/
     ├── test_engine.py   parseo del plan, enrutamiento, parseo de salidas, log
     ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
-    └── test_ops.py      checkpoints, bloqueo del plan
+    ├── test_ops.py      checkpoints, bloqueo del plan, pasadas vacías
+    ├── test_llm.py      modelos gratuitos contra un servidor compatible con OpenAI simulado
+    └── test_ui.py       API de la UI, token, ejecución completa con una CLI simulada
 ```
 
 ```bash
-python3 -m pytest -q && ruff check .
+pip install -e ".[dev]"
+python -m pytest -q && ruff check .
 ```
+
+GitHub Actions (`.github/workflows/tests.yml`) repite esto en un clon limpio con Python
+3.10 a 3.13 en cada push y pull request.
 
 Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
 apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.

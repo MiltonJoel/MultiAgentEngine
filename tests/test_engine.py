@@ -8,7 +8,9 @@ from engine.graph import (
     after_audit,
     after_review,
     after_tests,
+    audit_node,
     plan_done,
+    plan_items,
     plan_open,
     plan_states,
     plan_unparsed,
@@ -23,15 +25,15 @@ def test_after_tests():
         todo.write_text("<!-- ENGINE-STATUS\nLogin: DONE\nSignup: TODO\n-->\n")
         done.write_text("<!-- ENGINE-STATUS\nLogin: DONE\nSignup: DONE\n-->\n")
 
-        def route(tests_passed, plan, audited=False, iteration=0):
-            return after_tests({"tests_passed": tests_passed, "plan": str(plan), "audited": audited,
+        def route(tests_passed, plan, clean=False, iteration=0):
+            return after_tests({"tests_passed": tests_passed, "plan": str(plan), "audit_clean": clean,
                                 "iteration": iteration, "max_iterations": MAX_ITERATIONS})
 
-        assert route(False, done) == "reviewer"                 # red -> analyse
-        assert route(True, todo) == "coder"                     # green, unfinished -> keep working
-        assert route(True, done) == "auditor"                   # green, finished -> one audit
-        assert route(True, done, audited=True) == "__end__"     # already audited -> done
-        assert route(False, done, audited=True) == "reviewer"   # red after audit still gets reviewed
+        assert route(False, done) == "reviewer"               # red -> analyse
+        assert route(True, todo) == "coder"                   # green, unfinished -> keep working
+        assert route(True, done) == "auditor"                 # green, finished, not clean yet -> audit (again)
+        assert route(True, done, clean=True) == "__end__"     # clean audit -> done
+        assert route(False, done, clean=True) == "reviewer"   # red still gets reviewed
         assert route(True, todo, iteration=MAX_ITERATIONS) == "__end__"  # cap wins over everything
         assert route(True, done, iteration=MAX_ITERATIONS) == "__end__"
 
@@ -128,9 +130,10 @@ def test_json_errors_reads_ruff_and_eslint_and_declines_the_rest():
 
 def test_parse_problems_tolerates_fences_and_junk():
     payload = {"problems": [{"file": "bot.py", "line": 42, "description": "d", "suggested_fix": "f"}]}
-    assert _parse_problems(json.dumps(payload)) == payload["problems"]
-    assert _parse_problems(f"```json\n{json.dumps(payload)}\n```") == payload["problems"]
-    assert _parse_problems("codex had a bad day")[0]["description"] == "codex had a bad day"
+    expected = [{"unit": "", **payload["problems"][0]}]
+    assert _parse_problems(json.dumps(payload)) == expected
+    assert _parse_problems(f"```json\n{json.dumps(payload)}\n```") == expected
+    assert _parse_problems("codex had a bad day")[0]["description"] == "unreadable reply: codex had a bad day"
 
 
 def test_codex_noise_is_recognised():
@@ -175,3 +178,42 @@ def test_runlog_accumulates_money_and_writes_one_line_per_event():
         # seconds must not be summed into the money totals, only *_usd / *_tokens
         assert runlog.totals() == {"cost_usd": 0.15000000000000002, "input_tokens": 12}
         assert "$0.15" in runlog.summary()
+
+
+def test_audit_findings_reopen_done_units_until_the_audit_is_clean():
+    from engine.cli import RUNNERS
+    body = "\nNotes the user wrote.\n"
+    findings = {"problems": [
+        {"unit": "Step 1 — Login", "file": "a.py", "line": 3, "description": "no test\ncovers --> lockout",
+         "suggested_fix": "add one"},
+        {"unit": "step 1 — login", "file": "a.py", "line": 9, "description": "second finding", "suggested_fix": "x"},
+        {"unit": "Step 3", "file": "b.py", "line": 1, "description": "stub", "suggested_fix": "x"},  # BLOCKED
+        {"unit": "Nope", "file": "c.py", "line": 1, "description": "unknown unit", "suggested_fix": "x"},
+    ]}
+    with tempfile.TemporaryDirectory() as d:
+        spec, plan = Path(d) / "spec.md", Path(d) / "plan.md"
+        spec.write_text("# Spec\n")
+        plan.write_text("<!-- ENGINE-STATUS\nStep 1 — Login: DONE\nStep 2: DONE\nStep 3: BLOCKED no keys\n-->" + body)
+        state = {"repo": d, "spec": str(spec), "plan": str(plan), "agents": {"auditor": "fake"},
+                 "git_branch": None, "base_sha": None, "focus": [], "iteration": 1, "max_iterations": MAX_ITERATIONS}
+
+        reply = findings
+        RUNNERS["fake"] = lambda prompt, cwd, label, **kw: json.dumps(reply)
+        try:
+            update = audit_node(state)
+            assert update["audit_clean"] is False and after_audit({**state, **update}) == "coder"
+            assert dict(plan_items(str(plan))) == {"Step 1 — Login": "TODO", "Step 2": "DONE", "Step 3": "BLOCKED"}
+            text = plan.read_text()
+            assert "Step 1 — Login: TODO — audit: no test covers → lockout\n" in text  # one line, block intact
+            assert plan_unparsed(str(plan)) == [] and text.endswith(body)
+
+            # coder re-marks it DONE -> a green build must be audited again, not end
+            plan.write_text(text.replace("Step 1 — Login: TODO — audit: no test covers → lockout", "Step 1 — Login: DONE"))
+            assert after_tests({**state, **update, "tests_passed": True}) == "auditor"
+
+            reply = {"problems": []}
+            update = audit_node(state)
+            assert update["audit_clean"] is True and after_audit({**state, **update}) == "__end__"
+            assert after_tests({**state, **update, "tests_passed": True}) == "__end__"
+        finally:
+            del RUNNERS["fake"]

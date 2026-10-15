@@ -1,4 +1,5 @@
-"""Thin wrappers around the `claude` and `codex` CLIs (already authenticated locally)."""
+"""Thin wrappers around the `claude` and `codex` CLIs (already authenticated locally), plus the free-model
+runners in engine/llm.py."""
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engine import runlog
+from engine.llm import run_api, run_ollama
 
 # Errors that clear on their own; the reset time may be a unix epoch or "resets <ISO> UTC".
 RETRYABLE = re.compile(r"limit reached|rate.?limit|overloaded", re.IGNORECASE)
@@ -22,6 +24,25 @@ DEFAULT_WAIT = 1800  # no reset time in the output
 CLOCK_SKEW = 30
 MAX_WAITS = 4
 MAX_SLEEP = 6 * 3600  # a session limit is worth waiting out; a monthly cap is not
+# Only the end of a failed transcript is searched for a limit message: code or prose the agent wrote
+# earlier ("add a rate limit to the API") must not turn a real crash into hours of sleeping and re-runs.
+LIMIT_TAIL_LINES = 30
+
+
+def _limit_text(lines: list[str]) -> str:
+    """The CLI's own closing words: plain-text lines and the claude `result` event, never the agent's messages."""
+    kept = []
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            kept.append(line)
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            kept.append(f"{ev.get('subtype', '')} {ev.get('result', '')}")
+        elif not isinstance(ev, dict) or ev.get("type") not in ("assistant", "user", "system"):
+            kept.append(line)
+    return "".join(kept[-LIMIT_TAIL_LINES:])
 
 
 def _retry_delay(text: str, now: float | None = None) -> float:
@@ -50,22 +71,29 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render) -> tuple[list[str], int]:
     """Run cmd with the prompt on stdin, printing progress live; returns (raw lines, exit code)."""
     print(f"\n--- {label} ---", flush=True)
-    proc = subprocess.Popen(
-        cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, start_new_session=True,
-    )
-    proc.stdin.write(prompt)
-    proc.stdin.close()
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf8", errors="replace", bufsize=1, start_new_session=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(f"{label}: `{cmd[0]}` is not installed or not on PATH")
     timed_out = threading.Event()
 
     def on_timeout():
         timed_out.set()
         _kill_tree(proc)
 
+    # started before the prompt is written, so a CLI that never reads stdin can't hang us
     timer = threading.Timer(timeout, on_timeout)
     timer.start()
     lines = []
     try:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except BrokenPipeError:  # the CLI exited before reading; its output says why
+            pass
         for line in proc.stdout:
             if CODEX_NOISE.search(line):
                 print(f"[{label}] (codex could not refresh its model list; using defaults)", flush=True)
@@ -85,15 +113,25 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
     return lines, proc.returncode
 
 
-def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render=None) -> list[str]:
-    """Run cmd, sleeping through usage/rate limits until they reset. Only a non-zero exit is inspected."""
+def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render=None,
+            failed=None, on_attempt=None) -> list[str]:
+    """Run cmd, sleeping through usage/rate limits until they reset.
+    failed(lines): a reason string when an exit-0 transcript still reports an error, else ''.
+    on_attempt(lines, seconds): called after every attempt, failed ones included, so their spend is logged."""
     for attempt in range(MAX_WAITS + 1):
-        lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
-        if code == 0:
+        started = time.monotonic()
+        lines = []
+        try:
+            lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
+        finally:
+            if on_attempt:
+                on_attempt(lines, time.monotonic() - started)
+        reason = (failed(lines) if failed else "") if code == 0 else f"exit {code}"
+        if not reason:
             return lines
-        delay = _retry_delay("".join(lines))
+        delay = _retry_delay(_limit_text(lines))
         if not delay or attempt == MAX_WAITS:
-            raise RuntimeError(f"{label} failed (exit {code})")
+            raise RuntimeError(f"{label} failed ({reason})")
         resume = datetime.now(timezone.utc).astimezone().replace(microsecond=0) + timedelta(seconds=delay)
         if delay > MAX_SLEEP:
             raise RuntimeError(
@@ -163,14 +201,25 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
                add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
+    if write:  # headless acceptEdits refuses Bash, so the coder could never run the tests DONE requires
+        cmd += ["--allowedTools", "Bash"]
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
     if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
         prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
-    started = time.monotonic()
-    lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress)
-    runlog.log("agent", label=label, agent="claude", seconds=round(time.monotonic() - started, 1),
-               prompt_chars=len(prompt), **_claude_usage(lines))
+
+    def failed(lines: list[str]) -> str:
+        final = _claude_final(lines)
+        if not final:
+            return "no result event — the CLI stopped before finishing"
+        return f"reported {final.get('subtype') or 'an error'}" if final.get("is_error") else ""
+
+    def on_attempt(lines: list[str], seconds: float) -> None:
+        runlog.log("agent", label=label, agent="claude", seconds=round(seconds, 1),
+                   prompt_chars=len(prompt), **_claude_usage(lines))
+
+    lines = _stream(cmd, prompt, cwd, timeout=timeout, label=label, render=_claude_progress,
+                    failed=failed, on_attempt=on_attempt)
     return _claude_result(lines)
 
 
@@ -188,26 +237,39 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
         with os.fdopen(fd, "w") as f:
             json.dump(schema, f)
         cmd += ["--output-schema", schema_file]
+
+    def on_attempt(lines: list[str], seconds: float) -> None:  # codex reports no cost of its own
+        runlog.log("agent", label=label, agent="codex", seconds=round(seconds, 1), prompt_chars=len(prompt))
+
     try:
-        started = time.monotonic()
-        _stream(cmd, prompt, cwd, timeout=timeout, label=label)
-        runlog.log("agent", label=label, agent="codex", seconds=round(time.monotonic() - started, 1),
-                   prompt_chars=len(prompt))  # codex reports no cost of its own
-        return Path(last_message).read_text().strip()
+        _stream(cmd, prompt, cwd, timeout=timeout, label=label, on_attempt=on_attempt)
+        return Path(last_message).read_text(encoding="utf8", errors="replace").strip()
     finally:
         os.unlink(last_message)
         if schema_file:
             os.unlink(schema_file)
 
 
-# Which CLI plays which role is configuration; every runner takes the same arguments.
-RUNNERS = {"claude": run_claude, "codex": run_codex}
+# Which runner plays which role is configuration; every runner takes the same arguments.
+RUNNERS = {"claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api}
+# Runners that call a model over HTTP instead of a CLI; they take an optional model: "ollama:qwen2.5-coder:14b".
+MODEL_RUNNERS = ("ollama", "api")
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
+FREE_AGENTS = dict.fromkeys(DEFAULT_AGENTS, "ollama")  # `mae --free`: no subscription, no key
+
+
+def split_agent(agent: str) -> tuple[str, str]:
+    """"ollama:qwen2.5-coder:14b" -> ("ollama", "qwen2.5-coder:14b"); "claude" -> ("claude", "")."""
+    runner, _, model = agent.partition(":")
+    return runner.strip(), model.strip()
 
 
 def run_agent(agent: str, prompt: str, cwd: str, label: str, **kwargs) -> str:
+    name, model = split_agent(agent)
     try:
-        runner = RUNNERS[agent]
+        runner = RUNNERS[name]
     except KeyError:
         raise SystemExit(f"unknown agent {agent!r} for {label} — known: {', '.join(sorted(RUNNERS))}")
+    if model:
+        kwargs["model"] = model
     return runner(prompt, cwd, label=label, **kwargs)

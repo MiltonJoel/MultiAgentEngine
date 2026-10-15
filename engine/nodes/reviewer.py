@@ -1,4 +1,4 @@
-"""Two read-only passes with one output shape: reviewer (red build) and auditor (once, on green)."""
+"""Two read-only passes with one output shape: reviewer (red build) and auditor (green + closed queue, until clean)."""
 import json
 import re
 from pathlib import Path
@@ -15,12 +15,13 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "unit": {"type": "string"},  # status-block name the finding belongs to; "" if none
                     "file": {"type": "string"},
                     "line": {"type": "integer"},
                     "description": {"type": "string"},
                     "suggested_fix": {"type": "string"},
                 },
-                "required": ["file", "line", "description", "suggested_fix"],
+                "required": ["unit", "file", "line", "description", "suggested_fix"],
                 "additionalProperties": False,
             },
         }
@@ -31,15 +32,29 @@ SCHEMA = {
 NO_DIFF = "(not available — the repository is not under git, or nothing was committed)"
 
 
+def _problem(item: dict) -> dict:
+    line = item.get("line")
+    return {"unit": str(item.get("unit") or ""), "file": str(item.get("file") or ""),
+            "line": line if isinstance(line, int) and not isinstance(line, bool) else 0,
+            "description": str(item.get("description") or ""), "suggested_fix": str(item.get("suggested_fix") or "")}
+
+
 def _parse_problems(raw: str) -> list[dict]:
-    """JSON out of a possibly fenced or chatty reply; a garbage reply becomes one problem, not a crash."""
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
+    """The first `{"problems": [...]}` object in a possibly fenced or chatty reply. Anything else — prose,
+    `{"problems": null}`, a list of strings — becomes one problem: a reply we can't read is never a clean audit."""
+    decoder = json.JSONDecoder()
+    for start in (m.start() for m in re.finditer(r"\{", raw)):
         try:
-            return json.loads(match.group())["problems"]
-        except (ValueError, KeyError, TypeError):
-            pass
-    return [{"file": "", "line": 0, "description": raw.strip()[:800], "suggested_fix": ""}]
+            payload, _ = decoder.raw_decode(raw, start)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and "problems" in payload:
+            problems = payload["problems"]
+            if isinstance(problems, list) and all(isinstance(item, dict) for item in problems):
+                return [_problem(item) for item in problems]
+            break
+    text = raw.strip()[:800] or "the agent returned an empty reply"
+    return [{"unit": "", "file": "", "line": 0, "description": f"unreadable reply: {text}", "suggested_fix": ""}]
 
 
 def _diff(state: GraphState, ref: str | None) -> str:
@@ -64,8 +79,8 @@ def _focus(state: GraphState) -> str:
 def reviewer_node(state: GraphState) -> dict:
     prompt = prompts.load(
         "reviewer", state["repo"],
-        spec=Path(state["spec"]).read_text(),
-        plan=Path(state["plan"]).read_text(),
+        spec=Path(state["spec"]).read_text(encoding="utf8", errors="replace"),
+        plan=Path(state["plan"]).read_text(encoding="utf8", errors="replace"),
         errors=json.dumps(state["errors"], indent=2),
         diff=_diff(state, "HEAD~1"),  # the pass that just failed
     )
@@ -76,12 +91,12 @@ def reviewer_node(state: GraphState) -> dict:
 def auditor_node(state: GraphState) -> dict:
     prompt = prompts.load(
         "auditor", state["repo"],
-        spec=Path(state["spec"]).read_text(),
-        plan=Path(state["plan"]).read_text(),
+        spec=Path(state["spec"]).read_text(encoding="utf8", errors="replace"),
+        plan=Path(state["plan"]).read_text(encoding="utf8", errors="replace"),
         focus=_focus(state),
         diff=_diff(state, state.get("base_sha")),  # everything this run changed
     )
     raw = run_agent(state["agents"]["auditor"], prompt, cwd=state["repo"], label="auditor", schema=SCHEMA)
     problems = _parse_problems(raw)
     print(f"[auditor] {len(problems)} problem(s) against the plan", flush=True)
-    return {"problems": problems, "audited": True}
+    return {"problems": problems, "audit_clean": not problems}

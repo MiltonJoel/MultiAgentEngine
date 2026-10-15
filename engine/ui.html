@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MultiAgentEngine</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Ccircle cx='10' cy='11' r='4' fill='white'/%3E%3Ccircle cx='22' cy='11' r='4' fill='white' opacity='.7'/%3E%3Ccircle cx='16' cy='22' r='4' fill='white' opacity='.85'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #0b0d14; --panel: #12151f; --panel2: #171b28; --line: #252a3a; --line2: #313852;
+  --text: #e6e8f0; --muted: #8a91a8; --faint: #5b627a;
+  --accent: #7c5cff; --accent2: #22d3ee;
+  --todo: #8a91a8; --prog: #f5b544; --done: #34d399; --blocked: #f87171;
+  --coder: #a78bfa; --tester: #22d3ee; --reviewer: #f5b544; --auditor: #f472b6; --git: #34d399;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f7fb; --panel: #ffffff; --panel2: #f1f3f9; --line: #e3e6ef; --line2: #d3d8e6;
+    --text: #151826; --muted: #5d6480; --faint: #9aa1b8; color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.mono { font-family: var(--mono); }
+
+header {
+  display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
+.brand svg { width: 28px; height: 28px; }
+.brand small { color: var(--muted); font-weight: 500; }
+.repo { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.repo input { flex: 1; min-width: 0; }
+input[type=text], input[type=number], select, textarea {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.btn {
+  border: 1px solid var(--line2); background: var(--panel2); border-radius: 8px; padding: 8px 14px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: linear-gradient(135deg, var(--accent), #5b3df5); border-color: transparent; color: white; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { background: color-mix(in srgb, var(--blocked) 18%, var(--panel2)); border-color: color-mix(in srgb, var(--blocked) 50%, transparent); }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px;
+  background: var(--panel2); border: 1px solid var(--line); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.pill.running .dot { background: var(--done); box-shadow: 0 0 0 0 var(--done); animation: pulse 1.6s infinite; }
+.pill.failed .dot { background: var(--blocked); }
+.pill.clean .dot { background: var(--done); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--done) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+
+nav.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+nav.tabs button { background: none; border: 0; padding: 11px 14px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; }
+nav.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+nav.tabs .count { background: var(--panel2); border-radius: 999px; padding: 1px 7px; font-size: 11px; margin-left: 4px; }
+
+main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
+.view { display: none; }
+.view.on { display: block; }
+.grid { display: grid; gap: 16px; }
+.mission { grid-template-columns: minmax(340px, 440px) 1fr; }
+@media (max-width: 980px) { .mission, .history, .docs { grid-template-columns: 1fr !important; } header { flex-wrap: wrap; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
+.card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.card h2 .spacer { flex: 1; }
+.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+/* pipeline */
+.pipeline svg { width: 100%; height: auto; display: block; }
+.node rect { fill: var(--panel2); stroke: var(--line2); stroke-width: 1.5; transition: all .3s; }
+.node text { fill: var(--text); font: 600 13px var(--sans); }
+.node text.sub { fill: var(--muted); font: 500 10.5px var(--mono); }
+.node.active rect { stroke: var(--c); stroke-width: 2.5; fill: color-mix(in srgb, var(--c) 16%, var(--panel2)); filter: drop-shadow(0 0 10px color-mix(in srgb, var(--c) 60%, transparent)); }
+.node.active .ring { opacity: 1; animation: spin 2.4s linear infinite; }
+.node .ring { opacity: 0; transform-box: fill-box; transform-origin: center; stroke: var(--c); fill: none; stroke-width: 2; stroke-dasharray: 6 8; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.edge { stroke: var(--line2); stroke-width: 1.6; fill: none; }
+.edge.hot { stroke: var(--accent2); stroke-dasharray: 5 5; animation: flow .7s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -10; } }
+.elabel { fill: var(--faint); font: 500 10px var(--sans); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.stat { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.progress { height: 6px; border-radius: 99px; background: var(--panel2); overflow: hidden; margin-top: 12px; display: flex; }
+.progress i { display: block; height: 100%; transition: width .4s; }
+
+/* launch */
+.roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.roles label, .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.roles select, .roles input.model { width: 100%; }
+.roles input.model { margin-top: 6px; }
+.field { margin-top: 10px; }
+.field textarea { width: 100%; min-height: 64px; resize: vertical; font-family: var(--mono); font-size: 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 10px; }
+.warn { background: color-mix(in srgb, var(--prog) 12%, transparent); border: 1px solid color-mix(in srgb, var(--prog) 40%, transparent);
+  color: var(--text); border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-top: 10px; }
+.err { background: color-mix(in srgb, var(--blocked) 12%, transparent); border-color: color-mix(in srgb, var(--blocked) 40%, transparent); }
+
+/* units */
+.units { display: flex; flex-direction: column; gap: 6px; }
+.unit { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); }
+.unit .name { flex: 1; min-width: 0; }
+.unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.unit .note { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font: 700 10px var(--mono); padding: 3px 7px; border-radius: 6px; letter-spacing: .4px; border: 1px solid; white-space: nowrap; }
+.s-TODO { color: var(--todo); border-color: color-mix(in srgb, var(--todo) 40%, transparent); }
+.s-IN_PROGRESS { color: var(--prog); border-color: color-mix(in srgb, var(--prog) 45%, transparent); background: color-mix(in srgb, var(--prog) 10%, transparent); }
+.s-DONE { color: var(--done); border-color: color-mix(in srgb, var(--done) 45%, transparent); background: color-mix(in srgb, var(--done) 10%, transparent); }
+.s-BLOCKED { color: var(--blocked); border-color: color-mix(in srgb, var(--blocked) 45%, transparent); background: color-mix(in srgb, var(--blocked) 10%, transparent); }
+.unit select { padding: 3px 6px; font-size: 12px; }
+.empty { color: var(--muted); text-align: center; padding: 22px 10px; border: 1px dashed var(--line2); border-radius: 10px; font-size: 13px; }
+.board { grid-template-columns: repeat(4, 1fr); }
+.col h3 { margin: 0 0 8px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+
+/* console */
+.console { background: #07080d; border: 1px solid var(--line); border-radius: 12px; height: calc(100vh - 250px); min-height: 360px;
+  overflow: auto; font: 12.5px/1.55 var(--mono); padding: 10px 0; color: #c9cee0; }
+.console .l { padding: 0 14px; white-space: pre-wrap; word-break: break-word; }
+.console .l:hover { background: #ffffff08; }
+.console .tag { font-weight: 700; margin-right: 6px; }
+.console .hdr { margin-top: 10px; padding: 4px 14px; font-weight: 700; color: white; background: linear-gradient(90deg, color-mix(in srgb, var(--c) 30%, transparent), transparent); border-left: 3px solid var(--c); }
+.console .dim { color: #6b7290; }
+.console .bad { color: #fca5a5; }
+.console .good { color: #6ee7b7; }
+.filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.filters button { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+.filters button.on { color: var(--text); border-color: var(--accent); }
+
+/* docs + history */
+.docs { grid-template-columns: 1fr 1fr; }
+.editor { width: 100%; min-height: 460px; font: 12.5px/1.55 var(--mono); resize: vertical; }
+.history { grid-template-columns: minmax(300px, 400px) 1fr; }
+.runs { display: flex; flex-direction: column; gap: 6px; max-height: calc(100vh - 200px); overflow: auto; }
+.runitem { text-align: left; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.runitem.on { border-color: var(--accent); }
+.runitem .top { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+.runitem .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; white-space: nowrap; }
+.b-clean { background: color-mix(in srgb, var(--done) 18%, transparent); color: var(--done); }
+.b-review { background: color-mix(in srgb, var(--prog) 18%, transparent); color: var(--prog); }
+.b-aborted, .b-finished { background: color-mix(in srgb, var(--blocked) 16%, transparent); color: var(--blocked); }
+.b-running { background: color-mix(in srgb, var(--prog) 16%, transparent); color: var(--prog); }
+.timeline { display: flex; flex-direction: column; gap: 0; font-size: 13px; }
+.ev { display: grid; grid-template-columns: 70px 90px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.ev .t { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+.ev .k { font-weight: 700; font-size: 12px; }
+.ev .d { color: var(--muted); word-break: break-word; }
+.commit { display: flex; gap: 10px; padding: 7px 10px; border-radius: 8px; align-items: baseline; width: 100%; text-align: left; background: none; border: 1px solid transparent; }
+.commit:hover { background: var(--panel2); border-color: var(--line); }
+.commit .sha { color: var(--accent2); font-family: var(--mono); font-size: 12px; }
+.commit .stat { all: unset; color: var(--faint); font-size: 12px; margin-left: auto; white-space: nowrap; }
+pre.diff { margin: 0; font: 12px/1.5 var(--mono); background: #07080d; border: 1px solid var(--line); border-radius: 10px; padding: 10px 0; max-height: 70vh; overflow: auto; color: #c9cee0; }
+pre.diff span { display: block; padding: 0 14px; white-space: pre; }
+pre.diff .a { background: #10b98118; color: #86efac; }
+pre.diff .r { background: #ef444418; color: #fca5a5; }
+pre.diff .h { color: #a5b4fc; }
+pre.diff .f { color: white; font-weight: 700; margin-top: 8px; }
+
+.toast { position: fixed; bottom: 18px; right: 18px; background: var(--panel); border: 1px solid var(--line2); padding: 10px 14px;
+  border-radius: 10px; box-shadow: 0 10px 30px #0006; max-width: 440px; transform: translateY(120px); opacity: 0; transition: all .25s; z-index: 50; }
+.toast.on { transform: none; opacity: 1; }
+.toast.bad { border-color: var(--blocked); }
+.welcome { text-align: center; padding: 60px 20px; }
+.welcome h1 { font-size: 26px; margin: 0 0 8px; }
+.welcome p { color: var(--muted); max-width: 560px; margin: 0 auto 20px; }
+kbd { font: 11px var(--mono); background: var(--panel2); border: 1px solid var(--line2); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+      <rect width="32" height="32" rx="8" fill="url(#g)"/><circle cx="10" cy="11" r="3.6" fill="#fff"/><circle cx="22" cy="11" r="3.6" fill="#fff" opacity=".75"/><circle cx="16" cy="22" r="3.6" fill="#fff" opacity=".9"/>
+      <path d="M10 11L22 11L16 22Z" stroke="#fff" stroke-width="1.2" fill="none" opacity=".5"/></svg>
+    MultiAgentEngine <small>mission control</small>
+  </div>
+  <form class="repo" id="repoForm">
+    <input type="text" id="repo" class="mono" placeholder="/path/to/the/repo/you/want/built" list="recent" autocomplete="off" aria-label="Target repository">
+    <datalist id="recent"></datalist>
+    <button class="btn" type="submit">Open</button>
+  </form>
+  <span class="pill" id="status"><span class="dot"></span><span id="statusText">Idle</span></span>
+</header>
+<nav class="tabs" role="tablist">
+  <button class="on" data-view="mission">Mission</button>
+  <button data-view="queue">Queue &amp; spec <span class="count" id="unitCount">0</span></button>
+  <button data-view="history">History <span class="count" id="runCount">0</span></button>
+</nav>
+
+<main>
+  <section class="view" id="welcome">
+    <div class="welcome card">
+      <h1>Point the engine at a repository</h1>
+      <p>The repo needs <code>.mae/spec.md</code> (what to build) and <code>.mae/plan.md</code> (the work queue). Open a folder above and you can create both from here.</p>
+    </div>
+  </section>
+
+  <section class="view on" id="mission">
+    <div class="grid mission">
+      <div class="stack">
+        <div class="card pipeline">
+          <h2>Pipeline <span class="spacer"></span><span id="iterLabel" class="mono" style="text-transform:none"></span></h2>
+          <svg viewBox="0 0 400 250" aria-label="Agent pipeline">
+            <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--line2)"/></marker></defs>
+            <path class="edge" id="e-ct" d="M118 55 H 152" marker-end="url(#arr)"/>
+            <path class="edge" id="e-tr" d="M248 70 C 300 90, 300 110, 300 150" marker-end="url(#arr)"/>
+            <path class="edge" id="e-ta" d="M200 82 V 150" marker-end="url(#arr)"/>
+            <path class="edge" id="e-rc" d="M300 205 C 300 240, 60 240, 60 85" marker-end="url(#arr)"/>
+            <path class="edge" id="e-ac" d="M152 180 C 100 180, 70 150, 66 85" marker-end="url(#arr)"/>
+            <path class="edge" id="e-tc" d="M152 40 C 130 10, 90 10, 75 25" marker-end="url(#arr)"/>
+            <text class="elabel" x="262" y="104">red</text>
+            <text class="elabel" x="206" y="122">green + queue closed</text>
+            <text class="elabel" x="94" y="12">green + open units</text>
+            <g class="node" id="n-coder" style="--c:var(--coder)"><rect x="10" y="28" width="106" height="56" rx="12"/><rect class="ring" x="6" y="24" width="114" height="64" rx="15"/><text x="24" y="52">Coder</text><text class="sub" x="24" y="70" id="a-coder">claude</text></g>
+            <g class="node" id="n-tester" style="--c:var(--tester)"><rect x="152" y="28" width="96" height="56" rx="12"/><rect class="ring" x="148" y="24" width="104" height="64" rx="15"/><text x="166" y="52">Tester</text><text class="sub" x="166" y="70" id="a-tester">gates</text></g>
+            <g class="node" id="n-auditor" style="--c:var(--auditor)"><rect x="152" y="152" width="96" height="56" rx="12"/><rect class="ring" x="148" y="148" width="104" height="64" rx="15"/><text x="166" y="176">Auditor</text><text class="sub" x="166" y="194" id="a-auditor">codex</text></g>
+            <g class="node" id="n-reviewer" style="--c:var(--reviewer)"><rect x="262" y="152" width="110" height="56" rx="12"/><rect class="ring" x="258" y="148" width="118" height="64" rx="15"/><text x="276" y="176">Reviewer</text><text class="sub" x="276" y="194" id="a-reviewer">codex</text></g>
+          </svg>
+          <div class="stats">
+            <div class="stat"><b id="sIter">0</b><span>passes</span></div>
+            <div class="stat"><b id="sErr">–</b><span>gate errors</span></div>
+            <div class="stat"><b id="sAudit">–</b><span>audit</span></div>
+            <div class="stat"><b id="sCost">$0.00</b><span>cost</span></div>
+          </div>
+          <div class="progress" id="progress" title="Work queue"></div>
+        </div>
+
+        <div class="card" id="launchCard">
+          <h2>Launch</h2>
+          <div class="roles">
+            <div><label for="r-coder">Coder</label><select id="r-coder"></select><input type="text" class="model" id="m-coder" aria-label="Coder model" spellcheck="false"></div>
+            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><input type="text" class="model" id="m-reviewer" aria-label="Reviewer model" spellcheck="false"></div>
+            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><input type="text" class="model" id="m-auditor" aria-label="Auditor model" spellcheck="false"></div>
+          </div>
+          <button class="btn small" id="freeBtn" style="margin-top:8px" title="Free local model through Ollama: no subscription, no API key">Use free models for every role</button>
+          <details>
+            <summary>Gates, iterations, git</summary>
+            <div class="field"><label for="gates">Gates — one command per line (blank = repo config or defaults)</label>
+              <textarea id="gates" spellcheck="false"></textarea></div>
+            <div class="row field">
+              <div><label for="maxIter">Max coder passes</label><input type="number" id="maxIter" min="1" style="width:110px"></div>
+              <label class="check" style="margin-top:16px"><input type="checkbox" id="noGates"> no gates at all</label>
+              <label class="check" style="margin-top:16px"><input type="checkbox" id="noGit"> no git checkpoints</label>
+            </div>
+          </details>
+          <div id="launchWarn"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn primary" id="startBtn">▶ Launch run</button>
+            <button class="btn danger" id="stopBtn" disabled>■ Stop</button>
+            <span id="launchHint" style="color:var(--muted);font-size:12px"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Work queue <span class="spacer"></span><button class="btn small" data-goto="queue">Edit</button></h2>
+          <div class="units" id="miniUnits"></div>
+        </div>
+      </div>
+
+      <div class="card" style="display:flex;flex-direction:column">
+        <h2>Live console <span class="spacer"></span>
+          <span class="filters" id="filters">
+            <button class="on" data-f="all">all</button><button data-f="coder">coder</button><button data-f="tester">tester</button>
+            <button data-f="reviewer">reviewer</button><button data-f="auditor">auditor</button><button data-f="git">git</button>
+          </span>
+          <label class="check" style="text-transform:none;letter-spacing:0"><input type="checkbox" id="follow" checked> follow</label>
+        </h2>
+        <div class="console" id="console" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="queue">
+    <div class="card" style="margin-bottom:16px">
+      <h2>Work queue <span class="spacer"></span><span class="mono" id="planPath" style="text-transform:none;letter-spacing:0;font-size:11px"></span></h2>
+      <form class="row" id="addUnit" style="margin-bottom:14px">
+        <input type="text" id="newUnit" placeholder="New unit, e.g. Rate limiting per user" style="flex:1;min-width:200px">
+        <input type="text" id="newNote" placeholder="note (optional)" style="flex:1;min-width:160px">
+        <button class="btn primary" type="submit">Add as TODO</button>
+      </form>
+      <div id="unparsed"></div>
+      <div class="grid board" id="board"></div>
+    </div>
+    <div class="grid docs">
+      <div class="card">
+        <h2>Spec <span class="spacer"></span><span class="mono" id="specPath" style="text-transform:none;letter-spacing:0;font-size:11px"></span>
+          <button class="btn small" data-save="spec">Save</button></h2>
+        <textarea class="editor" id="ed-spec" spellcheck="false"></textarea>
+      </div>
+      <div class="card">
+        <h2>Plan <span class="spacer"></span><button class="btn small" data-save="plan">Save</button></h2>
+        <textarea class="editor" id="ed-plan" spellcheck="false"></textarea>
+      </div>
+      <div class="card" style="grid-column:1/-1">
+        <h2>.mae/config.json <span class="spacer"></span><button class="btn small" data-save="config">Save</button></h2>
+        <textarea class="editor" id="ed-config" spellcheck="false" style="min-height:140px" placeholder='{"agents": {"reviewer": "claude"}, "max_iterations": 20}'></textarea>
+      </div>
+    </div>
+    <p style="color:var(--muted);font-size:12px">Tip: <kbd>Ctrl</kbd>+<kbd>S</kbd> saves the editor you are in.</p>
+  </section>
+
+  <section class="view" id="history">
+    <div class="grid history">
+      <div class="card"><h2>Runs <span class="spacer"></span><button class="btn small" id="refreshRuns">Refresh</button></h2><div class="runs" id="runs"></div></div>
+      <div class="stack" id="runDetail"><div class="card"><div class="empty">Pick a run to see its timeline and checkpoint commits.</div></div></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const ROLES = ["coder", "reviewer", "auditor"];
+const STATES = ["TODO", "IN_PROGRESS", "DONE", "BLOCKED"];
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v; else if (k === "style") n.style.cssText = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v); else if (v !== undefined && v !== null) n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) n.append(kid.nodeType ? kid : String(kid));
+  return n;
+};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("mae:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("mae:" + k, JSON.stringify(v)); } catch {} },
+};
+
+let S = null;            // last /api/state
+let repo = decodeURIComponent(location.hash.slice(1)) || store.get("repo", "");
+let outNext = 0, lines = [], filter = "all";
+let live = { node: null, passes: 0, errors: null, audit: null, cost: 0, running: false, ended: null };
+
+async function api(path, body) {
+  const res = await fetch("/api/" + path, {
+    method: body ? "POST" : "GET",
+    headers: { "X-MAE-Token": TOKEN, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const q = (o) => new URLSearchParams(o).toString();
+
+function toast(msg, bad = false) {
+  const t = $("toast"); t.textContent = msg; t.className = "toast on" + (bad ? " bad" : "");
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = "toast"), bad ? 6000 : 2600);
+}
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+
+/* ---------- tabs ---------- */
+function show(view) {
+  document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === (S || view === "welcome" ? view : "welcome")));
+  store.set("view", view);
+  if (view === "history") loadRuns();
+}
+document.querySelectorAll("nav.tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => show(b.dataset.goto)));
+
+/* ---------- repo + state ---------- */
+async function openRepo(path) {
+  repo = path.trim();
+  if (!repo) return;
+  S = await api("state?" + q({ repo }));
+  repo = S.repo;
+  $("repo").value = repo;
+  history.replaceState(null, "", location.pathname + location.search + "#" + encodeURIComponent(repo));
+  const recent = [repo, ...store.get("recent", []).filter((r) => r !== repo)].slice(0, 8);
+  store.set("recent", recent); store.set("repo", repo);
+  $("recent").replaceChildren(...recent.map((r) => el("option", { value: r })));
+  renderState(true);
+  show(store.get("view", "mission"));
+}
+$("repoForm").addEventListener("submit", guard(async (e) => { e.preventDefault(); await openRepo($("repo").value); }));
+
+async function refreshState() { if (repo) { S = await api("state?" + q({ repo })); renderState(false); } }
+
+function renderState(fresh) {
+  if (!S) return;
+  const units = S.units;
+  $("unitCount").textContent = units.length;
+  $("planPath").textContent = S.paths.plan;
+  $("specPath").textContent = S.paths.spec;
+  // editors: only overwrite when not being edited
+  for (const k of ["spec", "plan", "config"]) {
+    const ed = $("ed-" + k);
+    if (fresh || (document.activeElement !== ed && !ed.dataset.dirty)) { ed.value = S.docs[k] ?? ""; delete ed.dataset.dirty; }
+  }
+  // role selects
+  if (fresh) {
+    const saved = store.get("agents:" + repo, {});
+    for (const role of ROLES) {
+      const sel = $("r-" + role);
+      sel.replaceChildren(...Object.keys(S.runners).map((name) =>
+        el("option", { value: name }, (RUNNER_LABEL[name] || name) + (S.runners[name].ready ? "" : " — not ready"))));
+      const [name, ...model] = (saved[role] || S.defaults.agents[role]).split(":");
+      sel.value = S.runners[name] ? name : S.defaults.agents[role];
+      $("m-" + role).value = model.join(":");
+    }
+    const opts = store.get("opts:" + repo, {});
+    $("gates").value = opts.gates || "";
+    $("gates").placeholder = S.defaults.gates.map((g) => g).join("\n");
+    $("maxIter").value = opts.maxIter || "";
+    $("maxIter").placeholder = S.defaults.max_iterations;
+    $("noGit").checked = !!opts.noGit; $("noGates").checked = !!opts.noGates;
+  }
+  renderAgents();
+  renderUnits();
+  renderLaunchWarnings();
+}
+
+const RUNNER_LABEL = { claude: "claude", codex: "codex", ollama: "ollama (free, local)", api: "api (OpenAI-compatible)" };
+// "ollama" or "ollama:<model>"; the model box only shows for runners that call a model over HTTP
+function agentOf(role) {
+  const name = $("r-" + role).value, model = $("m-" + role).value.trim();
+  return S && S.runners[name] && S.runners[name].model != null && model ? `${name}:${model}` : name;
+}
+function renderAgents() {
+  for (const role of ROLES) {
+    const r = S && S.runners[$("r-" + role).value], box = $("m-" + role);
+    box.hidden = !r || r.model == null;
+    box.placeholder = r && r.model ? r.model : "model";
+    $("a-" + role).textContent = agentOf(role);
+  }
+}
+function agentsChanged() {
+  renderAgents(); renderLaunchWarnings();
+  store.set("agents:" + repo, Object.fromEntries(ROLES.map((x) => [x, agentOf(x)])));
+}
+ROLES.forEach((r) => { $("r-" + r).addEventListener("change", agentsChanged); $("m-" + r).addEventListener("change", agentsChanged); });
+$("freeBtn").addEventListener("click", () => { for (const r of ROLES) $("r-" + r).value = "ollama"; agentsChanged(); });
+["gates", "maxIter", "noGit", "noGates"].forEach((id) => $(id).addEventListener("change", () =>
+  store.set("opts:" + repo, { gates: $("gates").value, maxIter: $("maxIter").value, noGit: $("noGit").checked, noGates: $("noGates").checked })));
+
+function renderLaunchWarnings() {
+  const box = $("launchWarn"); box.replaceChildren();
+  if (!S) return;
+  const warn = (msg, bad) => box.append(el("div", { class: "warn" + (bad ? " err" : "") }, msg));
+  if (S.docs.spec === null || S.docs.plan === null) {
+    const b = el("button", { class: "btn small", style: "margin-left:8px", onclick: guard(async () => {
+      S = await api("init", { repo }); renderState(true); toast("Created spec and plan — describe the work in the Queue & spec tab");
+    }) }, "Create them");
+    box.append(el("div", { class: "warn err" }, `Missing ${[S.docs.spec === null && "spec", S.docs.plan === null && "plan"].filter(Boolean).join(" and ")}.`, b));
+  }
+  for (const name of new Set(ROLES.map((role) => $("r-" + role).value))) {
+    const r = S.runners[name], roles = ROLES.filter((role) => $("r-" + role).value === name);
+    if (r && !r.ready) warn(`${roles.join(", ")} cannot run: ${r.why}`, true);
+  }
+  if (!live.running && S.units.length && !S.units.some((u) => u.state === "TODO" || u.state === "IN_PROGRESS"))
+    warn("Nothing is open: every unit is DONE or BLOCKED. Add or reopen a unit first.");
+  if (!S.git.is_repo && !$("noGit").checked) warn("Not a git repository: the run works, but without checkpoints to roll back to.");
+  $("launchHint").textContent = S.git.is_repo ? `on ${S.git.branch}` : "";
+}
+
+/* ---------- units ---------- */
+const chip = (s) => el("span", { class: "chip s-" + s }, s.replace("_", " "));
+function unitRow(u, editable) {
+  const kids = [el("div", { class: "name" }, el("div", { title: u.name }, u.name), u.note ? el("div", { class: "note", title: u.note }, u.note) : null)];
+  if (editable) {
+    const sel = el("select", { "aria-label": "State of " + u.name, onchange: guard(async () => {
+      S = await api("unit", { repo, name: u.name, state: sel.value }); renderState(false);
+    }) }, ...STATES.map((s) => el("option", { value: s }, s)));
+    sel.value = u.state;
+    kids.push(sel, el("button", { class: "btn small", title: "Delete unit", onclick: guard(async () => {
+      if (!confirm(`Delete “${u.name}” from the queue?`)) return;
+      S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
+    }) }, "✕"));
+  } else kids.push(chip(u.state));
+  return el("div", { class: "unit" }, ...kids);
+}
+function renderUnits() {
+  const units = S.units;
+  $("miniUnits").replaceChildren(...(units.length ? units.map((u) => unitRow(u, false))
+    : [el("div", { class: "empty" }, S.docs.plan === null ? "No plan yet." : "No status block yet — the coder writes it from the spec on the first pass.")]));
+  $("board").replaceChildren(...STATES.map((s) => {
+    const mine = units.filter((u) => u.state === s);
+    return el("div", { class: "col" }, el("h3", {}, chip(s), el("span", { style: "color:var(--muted)" }, mine.length)),
+      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true)) : [el("div", { class: "empty" }, "—")])));
+  }));
+  $("unparsed").replaceChildren(...S.unparsed.map((l) => el("div", { class: "warn err", style: "margin-bottom:8px" }, "Unreadable status line, the engine ignores it: ", el("code", {}, l))));
+  const n = units.length || 1, count = (s) => units.filter((u) => u.state === s).length;
+  $("progress").replaceChildren(...STATES.map((s) => el("i", { style: `width:${(count(s) / n) * 100}%;background:var(--${{ TODO: "todo", IN_PROGRESS: "prog", DONE: "done", BLOCKED: "blocked" }[s]})`, title: `${s}: ${count(s)}` })));
+}
+$("addUnit").addEventListener("submit", guard(async (e) => {
+  e.preventDefault();
+  const name = $("newUnit").value.trim(); if (!name) return;
+  S = await api("unit", { repo, name, state: "TODO", note: $("newNote").value.trim() ? "— " + $("newNote").value.trim() : "" });
+  $("newUnit").value = ""; $("newNote").value = ""; renderState(false); toast(`Added “${name}”`);
+}));
+
+/* ---------- editors ---------- */
+for (const k of ["spec", "plan", "config"]) {
+  const ed = $("ed-" + k);
+  ed.addEventListener("input", () => (ed.dataset.dirty = "1"));
+  ed.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(k); } });
+}
+const save = guard(async (which) => {
+  S = await api("doc", { repo, which, text: $("ed-" + which).value });
+  delete $("ed-" + which).dataset.dirty; renderState(false); toast(`Saved ${which}`);
+});
+document.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => save(b.dataset.save)));
+
+/* ---------- run control ---------- */
+$("startBtn").addEventListener("click", guard(async () => {
+  const gatesText = $("gates").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  const body = {
+    repo, agents: Object.fromEntries(ROLES.map((r) => [r, agentOf(r)])),
+    gates: $("noGates").checked ? [] : gatesText.length ? gatesText : null,
+    max_iterations: $("maxIter").value || null, no_git: $("noGit").checked,
+  };
+  await api("run", body);
+  lines = []; outNext = 0; live = { node: null, passes: 0, errors: null, audit: null, cost: 0, running: true, ended: null };
+  $("console").replaceChildren(); toast("Run launched"); poll();
+}));
+$("stopBtn").addEventListener("click", guard(async () => {
+  if (!confirm("Stop the run? The agent is killed; finished passes stay committed on the engine branch.")) return;
+  await api("stop", {}); toast("Stopping…");
+}));
+
+/* ---------- console ---------- */
+const TAGS = { coder: "var(--coder)", tester: "var(--tester)", reviewer: "var(--reviewer)", auditor: "var(--auditor)", git: "var(--git)", ui: "var(--accent)" };
+function classify(text) {
+  let m = text.match(/^--- (\w+) ---$/);
+  if (m) return { kind: "hdr", who: m[1] };
+  m = text.match(/^\[(\w+)\] ?(.*)$/);
+  if (m) return { kind: "tag", who: m[1], rest: m[2] };
+  if (text.startsWith("$ ") || /^\s{2}\S+:\d+ /.test(text) || /^\(\S+ not installed/.test(text)) return { kind: "plain", who: "tester" };
+  return { kind: "plain", who: null };
+}
+function ingest(text) {
+  const c = classify(text);
+  if (c.kind === "hdr") { live.node = c.who; if (c.who === "coder") live.passes++; }
+  if (text.startsWith("$ ")) live.node = "tester";
+  let m;
+  if ((m = text.match(/^\[tester\] (\d+) error/))) live.errors = +m[1];
+  if ((m = text.match(/^\[auditor\] (\d+) problem/))) live.audit = +m[1] ? `${m[1]} found` : "clean";
+  if ((m = text.match(/cost=\$([\d.]+)/))) live.cost += +m[1];
+  if (/^Finished after|^Aborted:|^\[ui\] engine exited/.test(text)) live.node = null;
+  if ((m = text.match(/^\[ui\] engine exited with code (-?\d+)/))) live.ended = +m[1];
+  if (/^\[(coder|tester|auditor|git)\]|^\$ /.test(text) && S) scheduleState();
+  return c;
+}
+function renderLine(text, c) {
+  if (filter !== "all" && c.who !== filter && !(filter === "tester" && c.kind === "plain" && c.who === "tester")) return null;
+  if (c.kind === "hdr") return el("div", { class: "l hdr", style: `--c:${TAGS[c.who] || "var(--accent)"}` }, c.who.toUpperCase());
+  const cls = /error|failed|Aborted|WARNING|Traceback/i.test(text) && !/ 0 error/.test(text) ? " bad" : /green|0 error|clean|Finished/.test(text) ? " good" : "";
+  if (c.kind === "tag") return el("div", { class: "l" + cls }, el("span", { class: "tag", style: `color:${TAGS[c.who] || "var(--muted)"}` }, `[${c.who}]`), c.rest);
+  return el("div", { class: "l" + (c.who === "tester" ? " dim" : "") + cls }, text);
+}
+function redraw() {
+  const box = $("console"); box.replaceChildren(...lines.map(([t, c]) => renderLine(t, c)).filter(Boolean));
+  if ($("follow").checked) box.scrollTop = box.scrollHeight;
+}
+$("filters").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  filter = b.dataset.f; document.querySelectorAll("#filters button").forEach((x) => x.classList.toggle("on", x === b)); redraw();
+});
+let stateTimer = null;
+function scheduleState() { clearTimeout(stateTimer); stateTimer = setTimeout(guard(refreshState), 800); }
+
+function renderLive() {
+  for (const n of ["coder", "tester", "reviewer", "auditor"]) $("n-" + n).classList.toggle("active", live.node === n);
+  const hot = { tester: ["e-ct"], reviewer: ["e-tr"], auditor: ["e-ta"], coder: live.passes > 1 ? ["e-rc", "e-ac", "e-tc"] : [] }[live.node] || [];
+  document.querySelectorAll(".edge").forEach((e) => e.classList.toggle("hot", hot.includes(e.id)));
+  $("sIter").textContent = live.passes;
+  $("sErr").textContent = live.errors ?? "–";
+  $("sAudit").textContent = live.audit ?? "–";
+  $("sCost").textContent = "$" + live.cost.toFixed(2);
+  $("iterLabel").textContent = live.node ? `now: ${live.node}` : "";
+  const pill = $("status");
+  pill.className = "pill" + (live.running ? " running" : live.ended === 0 ? " clean" : live.ended !== null ? " failed" : "");
+  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Finished clean" : live.ended === 2 ? "Finished · needs review" : `Ended (exit ${live.ended})`;
+  $("startBtn").disabled = live.running || !S; $("stopBtn").disabled = !live.running;
+}
+
+async function poll() {
+  clearTimeout(poll.t);
+  try {
+    const out = await api("output?" + q({ since: outNext }));
+    outNext = out.next;
+    const box = $("console"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    for (const t of out.lines) {
+      const c = ingest(t); lines.push([t, c]);
+      const n = renderLine(t, c); if (n) box.append(n);
+    }
+    if (lines.length > 6000) { lines = lines.slice(-4000); redraw(); }
+    if (out.lines.length && $("follow").checked && atBottom) box.scrollTop = box.scrollHeight;
+    const wasRunning = live.running;
+    live.running = out.running;
+    if (!out.running && out.exit_code !== null) live.ended = out.exit_code;
+    if (wasRunning && !out.running) { refreshState().catch(() => {}); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
+    if (out.repo && !repo) openRepo(out.repo);
+  } catch (e) {
+    if (/token/.test(e.message)) { toast(e.message, true); return; }
+  }
+  renderLive();
+  poll.t = setTimeout(poll, live.running ? 700 : 2500);
+}
+
+/* ---------- history ---------- */
+const fmtTime = (ts) => (ts ? ts.slice(11, 19) : "");
+const evText = (e) => {
+  const skip = new Set(["ts", "event"]);
+  if (e.event === "agent") return `${e.label} via ${e.agent} — ${e.seconds}s` + (e.cost_usd != null ? ` · $${(+e.cost_usd).toFixed(3)}` : "");
+  if (e.event === "gate") return `pass ${e.iteration}: ${e.errors} error(s)` + (e.failures?.length ? " — " + e.failures.slice(0, 3).join(" | ") : "");
+  if (e.event === "finish") return `tests_passed=${e.tests_passed} audit_clean=${e.audit_clean} · ${e.iterations} pass(es)`;
+  return Object.entries(e).filter(([k]) => !skip.has(k)).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  ");
+};
+const EVC = { start: "var(--accent)", agent: "var(--coder)", gate: "var(--tester)", checkpoint: "var(--git)", reopen: "var(--auditor)", limit: "var(--prog)", finish: "var(--done)", aborted: "var(--blocked)" };
+
+async function loadRuns() {
+  if (!repo) return;
+  const runs = await api("runs?" + q({ repo })).catch((e) => (toast(e.message, true), []));
+  $("runCount").textContent = runs.length;
+  const box = $("runs");
+  if (!runs.length) return box.replaceChildren(el("div", { class: "empty" }, "No runs yet in this repo."));
+  box.replaceChildren(...runs.map((r) => {
+    const b = r.status === "clean" ? "clean" : r.status === "needs review" ? "review" : r.status === "aborted" ? "aborted" : r.status.startsWith("finished") ? "finished" : "running";
+    return el("button", { class: "runitem", onclick: (e) => { document.querySelectorAll(".runitem").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); guard(showRun)(r); } },
+      el("div", { class: "top" }, el("span", { class: "mono" }, r.name), el("span", { class: "badge b-" + b }, r.status)),
+      el("div", { class: "meta" }, `${r.iterations} pass(es) · $${r.cost_usd.toFixed(2)}` + (r.focus?.length ? ` · ${r.focus.join(", ")}` : "")));
+  }));
+}
+$("refreshRuns").addEventListener("click", guard(loadRuns));
+
+async function showRun(r) {
+  const events = await api("runlog?" + q({ repo, name: r.name }));
+  const detail = $("runDetail");
+  const timeline = el("div", { class: "timeline" }, ...events.map((e) =>
+    el("div", { class: "ev" }, el("span", { class: "t" }, fmtTime(e.ts)), el("span", { class: "k", style: `color:${EVC[e.event] || "var(--muted)"}` }, e.event), el("span", { class: "d" }, evText(e)))));
+  const cards = [el("div", { class: "card" }, el("h2", {}, "Timeline ", el("span", { class: "spacer" }), r.error ? el("span", { class: "badge b-aborted", style: "text-transform:none" }, r.error) : null), timeline)];
+  if (r.branch && r.base_sha) {
+    const diffBox = el("div");
+    const commits = el("div", {}, el("div", { class: "empty" }, "Loading commits…"));
+    cards.unshift(el("div", { class: "card" }, el("h2", {}, "Checkpoint commits ", el("span", { class: "spacer" }), el("span", { class: "mono", style: "text-transform:none;letter-spacing:0" }, r.branch)), commits, diffBox));
+    api("commits?" + q({ repo, base: r.base_sha, branch: r.branch })).then(({ log }) => {
+      const rows = []; let cur = null;
+      for (const line of log.split("\n")) {
+        const parts = line.split("\t");
+        if (parts.length === 3) { cur = { sha: parts[0], time: parts[1], msg: parts[2], stat: "" }; rows.push(cur); }
+        else if (cur && line.trim()) cur.stat = line.trim().replace(/ files? changed/, "f").replace(/ insertions?\(\+\)/, "+").replace(/ deletions?\(-\)/, "−");
+      }
+      commits.replaceChildren(...(rows.length ? rows.map((c) => el("button", { class: "commit", onclick: guard(async () => {
+        const { diff } = await api("show?" + q({ repo, sha: c.sha }));
+        diffBox.replaceChildren(el("pre", { class: "diff" }, ...diff.split("\n").map((l) =>
+          el("span", { class: l.startsWith("diff --git") ? "f" : l.startsWith("@@") ? "h" : l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "r" : "" }, l || " "))));
+      }) }, el("span", { class: "sha" }, c.sha), el("span", { class: "t mono", style: "color:var(--faint);font-size:12px" }, c.time), el("span", {}, c.msg), el("span", { class: "stat" }, c.stat)))
+        : [el("div", { class: "empty" }, "No commits on this branch (deleted, or the run made none).")]));
+    }).catch((e) => commits.replaceChildren(el("div", { class: "empty" }, e.message)));
+  }
+  detail.replaceChildren(...cards);
+}
+
+/* ---------- boot ---------- */
+if (!TOKEN) toast("No token in the URL — open the link `mae-ui` printed in the terminal.", true);
+$("recent").replaceChildren(...store.get("recent", []).map((r) => el("option", { value: r })));
+if (repo) guard(openRepo)(repo); else show("welcome");
+poll();
+</script>
+</body>
+</html>
