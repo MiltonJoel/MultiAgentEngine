@@ -249,7 +249,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .unit.edit { flex-wrap: wrap; row-gap: 6px; }
 .unit.edit .name { flex: 1 1 140px; }
 .unit .ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: 0 0 auto; }
-.icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: var(--r); font-size: 12px; line-height: 1;
+.icon-btn { display: inline-grid; place-items: center; height: 26px; padding: 0 6px; border-radius: var(--r); font-size: 12px; line-height: 1;
   background: none; border: 1px solid transparent; color: var(--muted); }
 .icon-btn.danger:hover, .icon-btn.danger:focus-visible { color: var(--error); border-color: var(--error); }
 #unparsed code { font-family: var(--mono); font-size: 12px; color: var(--error); background: none; border: 1px solid var(--error); padding: 0 4px; border-radius: var(--r); word-break: break-word; }
@@ -283,7 +283,6 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 #launchHint { color: var(--muted); font-size: 12px; }
 /* mini work queue: ruled rows, no boxes */
 .mission .units { gap: 0; }
-.mission .unit { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; padding: 7px 0; }
 /* plan & spec: dense ruled board, then flat asymmetric editors */
 .qcard { border: 0; border-top: 1px solid var(--ink); border-radius: 0; background: none; padding: 14px 0; margin-bottom: 56px; }
 .addunit { margin-bottom: 14px; }
@@ -295,7 +294,6 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .board .col:first-child { border-left: 0; padding-left: 0; }
 .board .col h3 { margin-bottom: 4px; }
 .board .units { gap: 0; }
-.board .unit { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; padding: 7px 0; }
 .board .unit .ctl { margin-left: auto; justify-content: flex-end; }
 @media (max-width: 1100px) { .board .col:nth-child(odd) { border-left: 0; padding-left: 0; } .board .col:nth-child(n+3) { padding-top: 18px; } }
 @media (max-width: 560px) { .board { gap: 0; } .board .col { border-left: 0; padding: 14px 0 0; } }
