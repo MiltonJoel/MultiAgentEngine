@@ -328,6 +328,12 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .progress-cap b { color: var(--text); font-weight: 600; margin-right: auto; }
 .progress-cap span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .progress-cap span::before { content: ""; width: 8px; height: 8px; background: var(--dot); }
+/* == one control typography: every button, tab, filter, select and input uses the same face, size and weight == */
+.btn, .btn.small, .icon-btn, nav.tabs button, .filters button, details summary, select, .unit select, input[type=text], input[type=number] {
+  font: 500 12.5px/1.2 var(--mono); letter-spacing: 0; text-transform: none; }
+.btn, select, input[type=text], input[type=number] { min-height: 34px; }
+.btn.small, .unit select, .icon-btn { min-height: 26px; height: 26px; padding-top: 0; padding-bottom: 0; }
+.btn { justify-content: center; }
 </style>
 </head>
 <body>
