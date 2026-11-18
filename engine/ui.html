@@ -50,6 +50,7 @@ input[type=text], input[type=number], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .btn {
   border: 1px solid var(--line2); background: transparent; border-radius: var(--r); padding: 8px 14px; font-weight: 600;
+  font-size: 13px; line-height: 1.5; /* one scale: 37px tall like the inputs, .small is 26px */
   display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
 }
 .btn:hover { border-color: var(--ink); }
@@ -57,7 +58,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .btn.primary:hover { background: var(--ink); border-color: var(--ink); color: var(--bg); }
 .btn.danger { color: var(--error); border-color: var(--error); }
 .btn.danger:hover { background: var(--error); color: var(--bg); }
-.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn.small { padding: 3px 10px; font-size: 12px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn:disabled:hover { border-color: var(--line2); }
 
@@ -124,16 +125,19 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 
 /* units */
 .units { display: flex; flex-direction: column; gap: 6px; }
-.unit { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.unit { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--line2); border-radius: var(--r); }
 .unit .name { flex: 1; min-width: 0; }
-.unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1.4 var(--mono); }
+.unit[data-state=IN_PROGRESS] { border-left-color: var(--accent); }
+.unit[data-state=DONE] { border-left-color: var(--ink); }
+.unit[data-state=BLOCKED] { border-left-color: var(--error); }
+.unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1.4 var(--mono); color: var(--text); }
 .unit .name .note { color: var(--muted); font: 400 11.5px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip { font: 600 11px var(--mono); padding: 2px 6px; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
 .s-TODO { color: var(--faint); border-color: var(--line2); }
 .s-IN_PROGRESS { color: var(--accent); border-color: var(--accent); }
 .s-DONE { color: var(--bg); background: var(--ink); border-color: var(--ink); }
 .s-BLOCKED { color: var(--error); border-color: var(--error); }
-.unit select { padding: 3px 6px; font-size: 12px; }
+.unit select { height: 26px; padding: 0 6px; font-size: 12px; }
 .empty { color: var(--muted); text-align: center; padding: 22px 10px; border: 1px dashed var(--line2); border-radius: var(--r); font-size: 13px; }
 .board { grid-template-columns: repeat(4, 1fr); }
 .col h3 { margin: 0 0 8px; font: 400 15px/1.3 var(--serif); display: flex; gap: 6px; align-items: center; }
@@ -249,7 +253,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .unit.edit { flex-wrap: wrap; row-gap: 6px; }
 .unit.edit .name { flex: 1 1 140px; }
 .unit .ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: 0 0 auto; }
-.icon-btn { display: inline-grid; place-items: center; height: 26px; padding: 0 6px; border-radius: var(--r); font-size: 12px; line-height: 1;
+.icon-btn { display: inline-grid; place-items: center; height: 26px; padding: 0 8px; border-radius: var(--r); font: 500 12px/1 var(--mono);
   background: none; border: 1px solid transparent; color: var(--muted); }
 .icon-btn.danger:hover, .icon-btn.danger:focus-visible { color: var(--error); border-color: var(--error); }
 #unparsed code { font-family: var(--mono); font-size: 12px; color: var(--error); background: none; border: 1px solid var(--error); padding: 0 4px; border-radius: var(--r); word-break: break-word; }
@@ -282,7 +286,6 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 #freeBtn { margin-top: 10px; }
 #launchHint { color: var(--muted); font-size: 12px; }
 /* mini work queue: ruled rows, no boxes */
-.mission .units { gap: 0; }
 /* plan & spec: dense ruled board, then flat asymmetric editors */
 .qcard { border: 0; border-top: 1px solid var(--ink); border-radius: 0; background: none; padding: 14px 0; margin-bottom: 56px; }
 .addunit { margin-bottom: 14px; }
@@ -293,7 +296,6 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .board .col { padding: 8px 12px 0; border-left: 1px solid var(--line); }
 .board .col:first-child { border-left: 0; padding-left: 0; }
 .board .col h3 { margin-bottom: 4px; }
-.board .units { gap: 0; }
 .board .unit .ctl { margin-left: auto; justify-content: flex-end; }
 @media (max-width: 1100px) { .board .col:nth-child(odd) { border-left: 0; padding-left: 0; } .board .col:nth-child(n+3) { padding-top: 18px; } }
 @media (max-width: 560px) { .board { gap: 0; } .board .col { border-left: 0; padding: 14px 0 0; } }
@@ -714,7 +716,7 @@ function unitRow(u, editable) {
       S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
     }) }, "Delete")));
   } else kids.push(chip(u.state));
-  return el("div", { class: "unit" + (editable ? " edit" : "") }, ...kids);
+  return el("div", { class: "unit" + (editable ? " edit" : ""), "data-state": u.state }, ...kids);
 }
 function renderUnits() {
   const units = S.units;
