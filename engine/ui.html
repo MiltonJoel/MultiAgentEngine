@@ -237,7 +237,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
   direction: rtl; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; max-width: 60%; }
 .dirty-mark { font: 500 11px var(--mono); color: var(--accent); white-space: nowrap; }
 .dirty-mark[hidden] { display: none; }
-#ed-config::placeholder { color: var(--faint); font-style: italic; opacity: .75; }
+.editor::placeholder { color: var(--faint); font-style: italic; opacity: .75; }
 .editor.invalid, .editor.invalid:focus { border-color: var(--error); }
 .json-err { margin-top: 8px; color: var(--error); font: 12px/1.45 var(--mono); }
 .json-err[hidden] { display: none; }
@@ -467,11 +467,11 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
       <div class="card">
         <h2>Spec <span class="dirty-mark" id="dirty-spec" hidden>unsaved</span><span class="spacer"></span><span class="mono path" id="specPath"></span>
           <button class="btn small" data-save="spec">Save</button></h2>
-        <textarea class="editor" id="ed-spec" spellcheck="false"></textarea>
+        <textarea class="editor" id="ed-spec" spellcheck="false" placeholder="e.g.&#10;# Todo app&#10;A CLI that adds, lists and completes tasks, saved to tasks.json.&#10;&#10;## Done when&#10;- `todo add &quot;milk&quot;` adds a task&#10;- `todo list` shows open tasks&#10;- tests cover add, list and done"></textarea>
       </div>
       <div class="card">
         <h2>Plan <span class="dirty-mark" id="dirty-plan" hidden>unsaved</span><span class="spacer"></span><button class="btn small" data-save="plan">Save</button></h2>
-        <textarea class="editor" id="ed-plan" spellcheck="false"></textarea>
+        <textarea class="editor" id="ed-plan" spellcheck="false" placeholder="e.g.&#10;&lt;!-- ENGINE-STATUS&#10;Add task: TODO&#10;List tasks: TODO — show only open ones&#10;Complete task: TODO&#10;--&gt;&#10;&#10;# Work queue — notes for anything longer than one line"></textarea>
       </div>
       <div class="card cfg">
         <h2><span class="mono" style="font-size:13px">.mae/config.json</span> <span class="dirty-mark" id="dirty-config" hidden>unsaved</span><span class="spacer"></span><button class="btn small" data-save="config">Save</button></h2>
