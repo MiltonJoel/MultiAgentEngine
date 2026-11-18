@@ -4,27 +4,35 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MultiAgentEngine</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Ccircle cx='10' cy='11' r='4' fill='white'/%3E%3Ccircle cx='22' cy='11' r='4' fill='white' opacity='.7'/%3E%3Ccircle cx='16' cy='22' r='4' fill='white' opacity='.85'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231c1b18'/%3E%3Crect x='8' y='20' width='10' height='4' fill='%23c2410c'/%3E%3C/svg%3E">
 <style>
+/* == tokens (de-slop): warm neutrals + one accent (signal orange); red is reserved for errors == */
 :root {
-  --bg: #0b0d14; --panel: #12151f; --panel2: #171b28; --line: #252a3a; --line2: #313852;
-  --text: #e6e8f0; --muted: #8a91a8; --faint: #80869d; /* a11y: >=4.5:1 on --panel/--panel2 */
-  --accent: #7c5cff; --accent2: #22d3ee;
-  --todo: #8a91a8; --prog: #f5b544; --done: #34d399; --blocked: #f87171;
-  --coder: #a78bfa; --tester: #22d3ee; --reviewer: #f5b544; --auditor: #f472b6; --git: #34d399;
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color-scheme: dark;
+  --bg: #f4f2ed; --panel: #f4f2ed; --panel2: #ebe8e1; --line: #d6d2c8; --line2: #b9b4a8; --ink: #1c1b18;
+  --text: #1c1b18; --muted: #5a574f; --faint: #6b675e; /* >=4.5:1 on --bg/--panel2 */
+  --accent: #c2410c; --accent2: var(--accent); --error: #b42318;
+  --todo: var(--faint); --prog: var(--accent); --done: var(--ink); --blocked: var(--error);
+  /* roles are told apart by their label, not by colour */
+  --coder: var(--text); --tester: var(--text); --reviewer: var(--text); --auditor: var(--text); --git: var(--muted);
+  --con-bg: #161512; --con-ink: #d9d5cb; --con-dim: #8d887c;
+  /* two faces, both local (offline, no CDN): an editorial serif for headings, a mono for everything else */
+  --serif: Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif;
+  --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --r: 2px;
+  color-scheme: light;
 }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f6f7fb; --panel: #ffffff; --panel2: #f1f3f9; --line: #e3e6ef; --line2: #d3d8e6;
-    --text: #151826; --muted: #5d6480; --faint: #656b83; /* a11y: >=4.5:1 on --panel/--panel2 */ color-scheme: light;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141412; --panel: #141412; --panel2: #1d1c19; --line: #2f2d28; --line2: #4a4740; --ink: #ece8df;
+    --text: #ece8df; --muted: #a29d91; --faint: #8f8a7e; --accent: #f26a2e; --error: #f0584a;
+    --con-bg: #0d0d0b; color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+body { background: var(--bg); color: var(--text); font: 13px/1.5 var(--mono); }
+h1, h2, h3 { font-family: var(--serif); font-weight: 400; }
+h2 :is(button, label, span, input) { font-family: var(--mono); }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 .mono { font-family: var(--mono); }
@@ -33,152 +41,162 @@ header {
   display: flex; align-items: center; gap: 14px; padding: 12px 20px;
   border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
 }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
-.brand svg { width: 28px; height: 28px; }
-.brand small { color: var(--muted); font-weight: 500; }
+.brand { display: flex; align-items: center; gap: 10px; font: 400 18px/1.2 var(--serif); letter-spacing: 0; white-space: nowrap; }
 .repo { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .repo input { flex: 1; min-width: 0; }
 input[type=text], input[type=number], select, textarea {
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none;
+  background: var(--bg); border: 1px solid var(--line2); border-radius: var(--r); padding: 8px 10px; outline: none;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .btn {
-  border: 1px solid var(--line2); background: var(--panel2); border-radius: 8px; padding: 8px 14px; font-weight: 600;
+  border: 1px solid var(--line2); background: transparent; border-radius: var(--r); padding: 8px 14px; font-weight: 600;
   display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
 }
-.btn:hover { border-color: var(--accent); }
-.btn.primary { background: linear-gradient(135deg, var(--accent), #5b3df5); border-color: transparent; color: white; }
-.btn.primary:hover { filter: brightness(1.1); }
-.btn.danger { background: color-mix(in srgb, var(--blocked) 18%, var(--panel2)); border-color: color-mix(in srgb, var(--blocked) 50%, transparent); }
+.btn:hover { border-color: var(--ink); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.btn.primary:hover { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.btn.danger { color: var(--error); border-color: var(--error); }
+.btn.danger:hover { background: var(--error); color: var(--bg); }
 .btn.small { padding: 4px 10px; font-size: 12px; }
-.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--line2); }
 
-.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px;
-  background: var(--panel2); border: 1px solid var(--line); font-size: 12px; font-weight: 600; white-space: nowrap; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
-.pill.running .dot { background: var(--done); box-shadow: 0 0 0 0 var(--done); animation: pulse 1.6s infinite; }
-.pill.failed .dot { background: var(--blocked); }
-.pill.clean .dot { background: var(--done); }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--done) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border-radius: var(--r);
+  background: transparent; border: 1px solid var(--line2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 0; background: var(--faint); }
+.pill.running .dot { background: var(--accent); animation: pulse 1.2s steps(2, jump-none) infinite; }
+.pill.failed { border-color: var(--error); color: var(--error); }
+.pill.failed .dot { background: var(--error); }
+.pill.clean .dot { background: var(--ink); }
+@keyframes pulse { 50% { opacity: .2; } }
 
 nav.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
 nav.tabs button { background: none; border: 0; padding: 11px 14px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; }
 nav.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
-nav.tabs .count { background: var(--panel2); border-radius: 999px; padding: 1px 7px; font-size: 11px; margin-left: 4px; }
+nav.tabs .count { color: var(--muted); padding: 0; font-size: 11px; font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; margin-left: 4px; }
 
 main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
 .view { display: none; }
 .view.on { display: block; }
 .grid { display: grid; gap: 16px; }
-.mission { grid-template-columns: minmax(340px, 440px) 1fr; }
+.mission { grid-template-columns: minmax(300px, 380px) 1fr; gap: 28px; }
 @media (max-width: 980px) { .mission, .history, .docs { grid-template-columns: 1fr !important; } header { flex-wrap: wrap; } }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
-.card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; min-width: 0; }
+.card h2 { margin: 0 0 14px; font: 400 18px/1.3 var(--serif); color: var(--text); display: flex; align-items: center; gap: 8px; }
 .card h2 .spacer { flex: 1; }
-.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.stack { display: flex; flex-direction: column; min-width: 0; }
+/* left column: frameless sections split by one ink rule; the console is the only box */
+.mission .stack > .card { border: 0; border-top: 1px solid var(--ink); border-radius: 0; padding: 14px 0 20px; background: none; }
 
 /* pipeline */
 .pipeline svg { width: 100%; height: auto; display: block; }
-.node rect { fill: var(--panel2); stroke: var(--line2); stroke-width: 1.5; transition: all .3s; }
-.node text { fill: var(--text); font: 600 13px var(--sans); }
+.node rect { fill: var(--panel2); stroke: var(--line2); stroke-width: 1; transition: stroke .2s, fill .2s; }
+.node text { fill: var(--text); font: 600 11.5px var(--mono); }
 .node text.sub { fill: var(--muted); font: 500 10.5px var(--mono); }
-.node.active rect { stroke: var(--c); stroke-width: 2.5; fill: color-mix(in srgb, var(--c) 16%, var(--panel2)); filter: drop-shadow(0 0 10px color-mix(in srgb, var(--c) 60%, transparent)); }
-.node.active .ring { opacity: 1; animation: spin 2.4s linear infinite; }
-.node .ring { opacity: 0; transform-box: fill-box; transform-origin: center; stroke: var(--c); fill: none; stroke-width: 2; stroke-dasharray: 6 8; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.edge { stroke: var(--line2); stroke-width: 1.6; fill: none; }
-.edge.hot { stroke: var(--accent2); stroke-dasharray: 5 5; animation: flow .7s linear infinite; }
-@keyframes flow { to { stroke-dashoffset: -10; } }
-.elabel { fill: var(--faint); font: 500 10px var(--sans); }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
-.stat { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; }
-.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
-.stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-.progress { height: 6px; border-radius: 99px; background: var(--panel2); overflow: hidden; margin-top: 12px; display: flex; }
+.node.active rect { stroke: var(--accent); stroke-width: 2; fill: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
+.edge { stroke: var(--line2); stroke-width: 1; fill: none; }
+.edge.hot { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 4; animation: flow .8s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -8; } }
+.elabel { fill: var(--muted); font: 400 10px var(--mono); }
+/* stats: one ruled strip, no tiles */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.stat { padding: 6px 10px; min-width: 0; }
+.stat:first-child { padding-left: 0; }
+.stat + .stat { border-left: 1px solid var(--line); }
+.stat b { display: block; font: 500 16px/1.3 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress { height: 4px; border-radius: 0; background: var(--line); overflow: hidden; margin-top: 12px; display: flex; }
 .progress i { display: block; height: 100%; transition: width .4s; }
 
 /* launch */
 .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.roles label, .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.roles label, .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .roles select, .roles input.model { width: 100%; }
 .roles input.model { margin-top: 6px; }
 .field { margin-top: 10px; }
 .field textarea { width: 100%; min-height: 64px; resize: vertical; font-family: var(--mono); font-size: 12px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
-details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 10px; }
-.warn { background: color-mix(in srgb, var(--prog) 12%, transparent); border: 1px solid color-mix(in srgb, var(--prog) 40%, transparent);
-  color: var(--text); border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-top: 10px; }
-.err { background: color-mix(in srgb, var(--blocked) 12%, transparent); border-color: color-mix(in srgb, var(--blocked) 40%, transparent); }
+.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 12px; }
+.warn { border: 0; border-left: 2px solid var(--accent); border-radius: 0;
+  color: var(--text); padding: 4px 0 4px 12px; font-size: 13px; margin-top: 10px; }
+.err { border-left-color: var(--error); }
 
 /* units */
 .units { display: flex; flex-direction: column; gap: 6px; }
-.unit { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); }
+.unit { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .unit .name { flex: 1; min-width: 0; }
-.unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.unit .note { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip { font: 700 10px var(--mono); padding: 3px 7px; border-radius: 6px; letter-spacing: .4px; border: 1px solid; white-space: nowrap; }
-.s-TODO { color: var(--todo); border-color: color-mix(in srgb, var(--todo) 40%, transparent); }
-.s-IN_PROGRESS { color: var(--prog); border-color: color-mix(in srgb, var(--prog) 45%, transparent); background: color-mix(in srgb, var(--prog) 10%, transparent); }
-.s-DONE { color: var(--done); border-color: color-mix(in srgb, var(--done) 45%, transparent); background: color-mix(in srgb, var(--done) 10%, transparent); }
-.s-BLOCKED { color: var(--blocked); border-color: color-mix(in srgb, var(--blocked) 45%, transparent); background: color-mix(in srgb, var(--blocked) 10%, transparent); }
+.unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1.4 var(--mono); }
+.unit .name .note { color: var(--muted); font: 400 11.5px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font: 600 11px var(--mono); padding: 2px 6px; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
+.s-TODO { color: var(--faint); border-color: var(--line2); }
+.s-IN_PROGRESS { color: var(--accent); border-color: var(--accent); }
+.s-DONE { color: var(--bg); background: var(--ink); border-color: var(--ink); }
+.s-BLOCKED { color: var(--error); border-color: var(--error); }
 .unit select { padding: 3px 6px; font-size: 12px; }
-.empty { color: var(--muted); text-align: center; padding: 22px 10px; border: 1px dashed var(--line2); border-radius: 10px; font-size: 13px; }
+.empty { color: var(--muted); text-align: center; padding: 22px 10px; border: 1px dashed var(--line2); border-radius: var(--r); font-size: 13px; }
 .board { grid-template-columns: repeat(4, 1fr); }
-.col h3 { margin: 0 0 8px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.col h3 { margin: 0 0 8px; font: 400 15px/1.3 var(--serif); display: flex; gap: 6px; align-items: center; }
+.col h3 > :last-child { font: 400 11px var(--mono); color: var(--muted); }
 
 /* console */
-.console { background: #07080d; border: 1px solid var(--line); border-radius: 12px; height: calc(100vh - 250px); min-height: 360px;
-  overflow: auto; font: 12.5px/1.55 var(--mono); padding: 10px 0; color: #c9cee0; }
+.console { background: var(--con-bg); border: 0; border-radius: 0; height: calc(100vh - 250px); min-height: 360px;
+  overflow: auto; font: 12px/1.55 var(--mono); padding: 10px 0; color: var(--con-ink); }
 .console .l { padding: 0 14px; white-space: pre-wrap; word-break: break-word; }
-.console .l:hover { background: #ffffff08; }
-.console .tag { font-weight: 700; margin-right: 6px; }
-.console .hdr { margin-top: 10px; padding: 4px 14px; font-weight: 700; color: white; background: linear-gradient(90deg, color-mix(in srgb, var(--c) 30%, transparent), transparent); border-left: 3px solid var(--c); }
-.console .dim { color: #6b7290; }
-.console .bad { color: #fca5a5; }
-.console .good { color: #6ee7b7; }
-.filters { display: flex; gap: 4px; flex-wrap: wrap; }
-.filters button { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
-.filters button.on { color: var(--text); border-color: var(--accent); }
+.console .l:hover { background: color-mix(in srgb, var(--con-ink) 6%, transparent); }
+.console .tag { color: var(--con-dim); margin-right: 6px; }
+.console .hdr { margin-top: 12px; padding: 6px 14px 2px; font-weight: 700; color: var(--con-ink); border-top: 1px solid color-mix(in srgb, var(--con-ink) 25%, transparent); }
+.console .dim { color: var(--con-dim); }
+.console .bad { color: color-mix(in srgb, var(--error) 75%, white); }
+.console .good { color: var(--con-ink); font-weight: 700; }
+/* filters: flat segmented text buttons */
+.filters { display: flex; flex-wrap: wrap; }
+.filters button { background: none; border: 1px solid var(--line); border-radius: 0; padding: 2px 9px; font-size: 12px; color: var(--muted); }
+.filters button + button { border-left: 0; }
+.filters button.on { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 
 /* docs + history */
 .docs { grid-template-columns: 1fr 1fr; }
-.editor { width: 100%; min-height: 460px; font: 12.5px/1.55 var(--mono); resize: vertical; }
-.history { grid-template-columns: minmax(300px, 400px) 1fr; }
-.runs { display: flex; flex-direction: column; gap: 6px; max-height: calc(100vh - 200px); overflow: auto; }
-.runitem { text-align: left; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-.runitem.on { border-color: var(--accent); }
-.runitem .top { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
-.runitem .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
-.badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; white-space: nowrap; }
-.b-clean { background: color-mix(in srgb, var(--done) 18%, transparent); color: var(--done); }
-.b-review { background: color-mix(in srgb, var(--prog) 18%, transparent); color: var(--prog); }
-.b-aborted, .b-finished { background: color-mix(in srgb, var(--blocked) 16%, transparent); color: var(--blocked); }
-.b-running { background: color-mix(in srgb, var(--prog) 16%, transparent); color: var(--prog); }
-.timeline { display: flex; flex-direction: column; gap: 0; font-size: 13px; }
-.ev { display: grid; grid-template-columns: 70px 90px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
-.ev .t { color: var(--faint); font-family: var(--mono); font-size: 12px; }
-.ev .k { font-weight: 700; font-size: 12px; }
+.editor { width: 100%; min-height: 460px; font: 12.5px/1.6 var(--mono); resize: vertical; background: var(--bg); border: 1px solid var(--line2); border-radius: var(--r); }
+.editor:focus { border-color: var(--accent); }
+.history { grid-template-columns: minmax(260px, 340px) 1fr; }
+.history .card { border: 0; border-top: 1px solid var(--ink); border-radius: 0; padding: 14px 0; background: none; }
+.card h2 .mono, .card h2 .badge { text-transform: none; letter-spacing: 0; }
+#runDetail .warn { margin: 0; }
+.runs { display: flex; flex-direction: column; max-height: calc(100vh - 200px); overflow: auto; }
+.runitem { text-align: left; width: 100%; background: none; border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; border-radius: 0; padding: 8px 0 8px 10px; }
+.runitem.on { border-left-color: var(--accent); }
+.runitem .top { display: flex; justify-content: space-between; gap: 8px; font: 500 13px/1.4 var(--mono); }
+.runitem .meta { color: var(--muted); font: 400 11.5px/1.4 var(--mono); margin-top: 3px; }
+.badge { font: 500 11px/1.5 var(--mono); text-transform: none; letter-spacing: 0; padding: 0 6px; border: 1px solid; border-radius: var(--r); white-space: nowrap; }
+.b-clean { color: var(--bg); background: var(--ink); border-color: var(--ink); }
+.b-review, .b-running { color: var(--accent); border-color: var(--accent); }
+.b-aborted, .b-finished { color: var(--error); border-color: var(--error); }
+.timeline { display: flex; flex-direction: column; gap: 0; font: 12px/1.5 var(--mono); }
+.ev { display: grid; grid-template-columns: 64px 84px 1fr; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.ev .t { color: var(--faint); font: 400 12px var(--mono); font-variant-numeric: tabular-nums; }
+.ev .k { font: 600 12px var(--mono); text-transform: lowercase; letter-spacing: 0; }
 .ev .d { color: var(--muted); word-break: break-word; }
-.commit { display: flex; gap: 10px; padding: 7px 10px; border-radius: 8px; align-items: baseline; width: 100%; text-align: left; background: none; border: 1px solid transparent; }
-.commit:hover { background: var(--panel2); border-color: var(--line); }
-.commit .sha { color: var(--accent2); font-family: var(--mono); font-size: 12px; }
-.commit .stat { all: unset; color: var(--faint); font-size: 12px; margin-left: auto; white-space: nowrap; }
-pre.diff { margin: 0; font: 12px/1.5 var(--mono); background: #07080d; border: 1px solid var(--line); border-radius: 10px; padding: 10px 0; max-height: 70vh; overflow: auto; color: #c9cee0; }
+.commit { font: 12px/1.5 var(--mono); display: flex; gap: 10px; padding: 6px 0 6px 10px; border-radius: 0; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; }
+.commit:hover { border-left-color: var(--line2); }
+.commit .t { color: var(--faint); font-size: 12px; }
+.commit .sha { color: var(--accent); font: 400 12px var(--mono); }
+.commit .stat { all: unset; color: var(--faint); font: 12px var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+pre.diff { margin: 12px 0 0; font: 12px/1.5 var(--mono); background: var(--con-bg); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 0; max-height: 70vh; overflow: auto; color: var(--con-ink); }
 pre.diff span { display: block; padding: 0 14px; white-space: pre; }
-pre.diff .a { background: #10b98118; color: #86efac; }
-pre.diff .r { background: #ef444418; color: #fca5a5; }
-pre.diff .h { color: #a5b4fc; }
-pre.diff .f { color: white; font-weight: 700; margin-top: 8px; }
+pre.diff .a { background: color-mix(in srgb, var(--con-ink) 10%, transparent); color: var(--con-ink); }
+pre.diff .r { background: color-mix(in srgb, var(--error) 18%, transparent); color: color-mix(in srgb, var(--error), white 30%); }
+pre.diff .h { color: var(--con-dim); }
+pre.diff .f { color: var(--con-ink); font-weight: 700; margin-top: 8px; }
 
-.toast { position: fixed; bottom: 18px; right: 18px; background: var(--panel); border: 1px solid var(--line2); padding: 10px 14px;
-  border-radius: 10px; box-shadow: 0 10px 30px #0006; max-width: 440px; transform: translateY(120px); opacity: 0; transition: all .25s; z-index: 50; }
+.toast { position: fixed; bottom: 18px; right: 18px; background: var(--bg); border: 1px solid var(--ink); padding: 10px 14px;
+  border-radius: var(--r); max-width: 440px; transform: translateY(120px); opacity: 0; transition: transform .2s, opacity .2s; z-index: 50; }
 .toast.on { transform: none; opacity: 1; }
-.toast.bad { border-color: var(--blocked); }
+.toast.bad { border-color: var(--error); border-left-width: 3px; }
 .welcome { text-align: center; padding: 60px 20px; }
 .welcome h1 { font-size: 26px; margin: 0 0 8px; }
 .welcome p { color: var(--muted); max-width: 560px; margin: 0 auto 20px; }
-kbd { font: 11px var(--mono); background: var(--panel2); border: 1px solid var(--line2); border-radius: 4px; padding: 1px 5px; }
+kbd { font: 11px var(--mono); background: transparent; border: 1px solid var(--line2); border-radius: var(--r); padding: 0 4px; }
 /* == header + responsive layout == */
 nav.tabs { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 nav.tabs::-webkit-scrollbar { display: none; }
@@ -188,7 +206,6 @@ nav.tabs button { flex: 0 0 auto; white-space: nowrap; }
 @media (max-width: 720px) {
   header { flex-wrap: wrap; gap: 10px; padding: 10px 16px; }
   .brand { min-width: 0; }
-  .brand small { display: none; }
   #status { margin-left: auto; min-width: 0; max-width: 55%; }
   .repo { order: 3; flex: 1 1 100%; }
   nav.tabs { padding: 0 8px; }
@@ -204,27 +221,25 @@ nav.tabs[hidden], .welcome-recent[hidden] { display: none; }
 :where(button, a, summary, [tabindex], select, input[type="checkbox"], input[type="radio"]):focus-visible,
 nav.tabs button:focus-visible, .filters button:focus-visible, .runitem:focus-visible, .commit:focus-visible, .btn:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
 }
-nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-radius: 6px 6px 0 0; }
-.welcome-hint { font-size: 13px; }
+nav.tabs button:focus-visible { outline-offset: -2px; }
 .welcome-recent { max-width: 560px; margin: 4px auto 0; text-align: left; }
-.welcome-recent h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+.welcome-recent h2 { font-size: 15px; color: var(--muted); margin: 0 0 8px; }
 .welcome-recent ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .welcome-recent .btn { width: 100%; text-align: left; font-weight: 500; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
-  .pill.running .dot, .node.active .ring, .edge.hot { animation: none !important; }
+  .pill.running .dot, .edge.hot { animation: none !important; }
 }
 /* == queue & spec + history == */
 /* paths: one line, truncated from the start ("…/demo/.mae/spec.md"), full path in title */
-.card h2 .path { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; color: var(--faint);
+.card h2 .path { font: 400 11px/1.3 var(--mono); color: var(--faint);
   direction: rtl; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; max-width: 60%; }
-.dirty-mark { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 600; color: var(--prog); white-space: nowrap; }
+.dirty-mark { font: 500 11px var(--mono); color: var(--accent); white-space: nowrap; }
 .dirty-mark[hidden] { display: none; }
 #ed-config::placeholder { color: var(--faint); font-style: italic; opacity: .75; }
-.editor.invalid { border-color: var(--blocked); }
-.json-err { margin-top: 8px; color: var(--blocked); font: 12px/1.45 var(--mono); }
+.editor.invalid, .editor.invalid:focus { border-color: var(--error); }
+.json-err { margin-top: 8px; color: var(--error); font: 12px/1.45 var(--mono); }
 .json-err[hidden] { display: none; }
 /* board: 4 cols on desktop, 2x2 on tablet, stacked on phone */
 @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
@@ -234,25 +249,20 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
 .unit.edit { flex-wrap: wrap; row-gap: 6px; }
 .unit.edit .name { flex: 1 1 140px; }
 .unit .ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: 0 0 auto; }
-.icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: 7px; font-size: 12px; line-height: 1;
-  background: none; border: 1px solid transparent; color: color-mix(in srgb, var(--blocked) 70%, var(--muted)); }
-.icon-btn.danger:hover, .icon-btn.danger:focus-visible { color: var(--blocked); background: color-mix(in srgb, var(--blocked) 14%, transparent);
-  border-color: color-mix(in srgb, var(--blocked) 45%, transparent); }
-#unparsed code { font-family: var(--mono); font-size: 12px; background: color-mix(in srgb, var(--blocked) 10%, transparent); padding: 1px 5px; border-radius: 4px; word-break: break-word; }
+.icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: var(--r); font-size: 12px; line-height: 1;
+  background: none; border: 1px solid transparent; color: var(--muted); }
+.icon-btn.danger:hover, .icon-btn.danger:focus-visible { color: var(--error); border-color: var(--error); }
+#unparsed code { font-family: var(--mono); font-size: 12px; color: var(--error); background: none; border: 1px solid var(--error); padding: 0 4px; border-radius: var(--r); word-break: break-word; }
 #unparsed .unparsed-line { display: block; margin-top: 4px; }
 #unparsed code:not(.unparsed-line) { white-space: nowrap; }
 .unit .ctl select { width: auto; max-width: 128px; }
 @media (max-width: 560px) { .editor { min-height: 260px; } }
 /* history */
-.hist-empty { text-align: center; padding: 48px 20px; }
+.hist-empty { text-align: left; padding: 40px 0; max-width: 560px; border: 0; border-top: 1px solid var(--ink); border-radius: 0; background: none; }
 .hist-empty[hidden], .history[hidden] { display: none; }
-.hist-empty-icon { font-size: 28px; color: var(--accent); margin-bottom: 6px; }
-.hist-empty h3 { margin: 0 0 6px; font-size: 16px; }
-.hist-empty p { color: var(--muted); max-width: 460px; margin: 0 auto 16px; font-size: 13px; }
-.run-loading { color: var(--muted); font-size: 13px; padding: 18px 4px; display: flex; align-items: center; gap: 10px; }
-.run-loading::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line2); border-top-color: var(--accent);
-  animation: mae-spin .8s linear infinite; flex: 0 0 auto; }
-@keyframes mae-spin { to { transform: rotate(360deg); } }
+.hist-empty h3 { margin: 0 0 6px; font: 400 22px/1.3 var(--serif); }
+.hist-empty p { color: var(--muted); margin: 0 0 16px; font: 13px/1.55 var(--mono); }
+.run-loading { color: var(--muted); font: 12px var(--mono); padding: 18px 4px; display: flex; align-items: center; gap: 10px; }
 @media (max-width: 560px) { .ev { grid-template-columns: 60px 1fr; } .ev .d { grid-column: 1 / -1; } }
 /* == launch card + live console == */
 /* one row per role: label | runner select, then readiness + model box underneath — no truncated runner names */
@@ -261,59 +271,69 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
 .roles > div > label { grid-column: 1; grid-row: 1; margin: 0; }
 .roles > div > select { grid-column: 2 / 4; grid-row: 1; min-width: 0; }
 .roles > div > .rstat { grid-column: 2; grid-row: 2; margin: 0; }
-.roles > div > input.model { grid-column: 3; grid-row: 2; margin: 0; padding-top: 4px; padding-bottom: 4px; font-size: 12.5px; }
+.roles > div > input.model { grid-column: 3; grid-row: 2; margin: 0; padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
 .rstat { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); white-space: nowrap; min-height: 15px; }
-.rstat::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.rstat::before { content: ""; width: 6px; height: 6px; background: var(--faint); flex: none; }
 .rstat:empty::before { display: none; }
-.rstat.ok::before { background: var(--done); }
-.rstat.no { color: var(--blocked); cursor: help; }
-.rstat.no::before { background: var(--blocked); }
-.launchwhy { margin-top: 8px; font-size: 12.5px; color: var(--blocked); line-height: 1.4; }
+.rstat.ok::before { background: var(--ink); }
+.rstat.no { color: var(--error); cursor: help; }
+.rstat.no::before { background: var(--error); }
+.launchwhy { margin-top: 8px; font-size: 12px; color: var(--error); line-height: 1.4; }
+#freeBtn { margin-top: 10px; }
+#launchHint { color: var(--muted); font-size: 12px; }
+/* mini work queue: ruled rows, no boxes */
+.mission .units { gap: 0; }
+.mission .unit { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; padding: 7px 0; }
+/* plan & spec: dense ruled board, then flat asymmetric editors */
+.qcard { border: 0; border-top: 1px solid var(--ink); border-radius: 0; background: none; padding: 14px 0; margin-bottom: 56px; }
+.addunit { margin-bottom: 14px; }
+.addunit input { flex: 1 1 160px; min-width: 0; }
+.addunit #newUnit { flex-basis: 200px; flex-grow: 2; }
+#unparsed .warn { margin: 0 0 8px; }
+.board { gap: 0; border-top: 1px solid var(--line); }
+.board .col { padding: 8px 12px 0; border-left: 1px solid var(--line); }
+.board .col:first-child { border-left: 0; padding-left: 0; }
+.board .col h3 { margin-bottom: 4px; }
+.board .units { gap: 0; }
+.board .unit { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; padding: 7px 0; }
+.board .unit .ctl { margin-left: auto; justify-content: flex-end; }
+@media (max-width: 1100px) { .board .col:nth-child(odd) { border-left: 0; padding-left: 0; } .board .col:nth-child(n+3) { padding-top: 18px; } }
+@media (max-width: 560px) { .board { gap: 0; } .board .col { border-left: 0; padding: 14px 0 0; } }
+.docs { grid-template-columns: 3fr 2fr; column-gap: 32px; row-gap: 40px; }
+.docs .card { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; padding: 14px 0 0; }
+.docs .cfg { grid-column: 1 / -1; }
+.docs .editor { border-radius: 0; }
+#ed-config { min-height: 140px; }
+.tip { color: var(--muted); font-size: 12px; margin-top: 24px; }
+/* console card: the one framed box; console fills its height */
+.concard { display: flex; flex-direction: column; border-color: var(--ink); }
 .launchwhy[hidden] { display: none; }
-.conwrap { position: relative; display: flex; flex-direction: column; }
+.conwrap { position: relative; display: flex; flex-direction: column; flex: 1; }
+.conwrap .console { flex: 1; }
 .conempty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
-  padding: 24px; color: #8a91a8; font: 13px/1.5 var(--sans); pointer-events: none; }
+  padding: 24px; color: var(--con-dim); font: 13px/1.5 var(--mono); pointer-events: none; }
 .conempty[hidden] { display: none; }
-.jump { position: absolute; right: 16px; bottom: 14px; box-shadow: 0 6px 18px #0008; border-color: var(--accent) !important; }
+.jump { position: absolute; right: 14px; bottom: 12px; border-color: var(--accent) !important; }
 .jump[hidden] { display: none; }
 #clearCon { margin-left: 4px; }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .console { border-color: #2a3048; box-shadow: 0 1px 2px #0f172a14, 0 4px 14px #0f172a12; }
-  :root:not([data-theme="dark"]) .launchwhy, :root:not([data-theme="dark"]) .rstat.no { color: #c0262d; }
-  :root:not([data-theme="dark"]) .jump { background: var(--panel); box-shadow: 0 6px 18px #0f172a33; }
-}
-:root[data-theme="light"] .console { border-color: #2a3048; box-shadow: 0 1px 2px #0f172a14, 0 4px 14px #0f172a12; }
 /* == pipeline card == */
 .pipeline svg { margin: 2px 0 0; }
-.node text { font-size: 12.5px; }
-.node text.sub { font-size: 10px; }
-.elabel { fill: var(--muted); font: 500 10px var(--sans); }
-.elabel.good, .elabel .good { fill: color-mix(in srgb, var(--done) 72%, var(--text)); }
-.elabel.bad { fill: color-mix(in srgb, var(--blocked) 78%, var(--text)); }
-.term rect { fill: none; stroke: var(--line2); stroke-width: 1.5; stroke-dasharray: 3 3; }
-.term text { fill: var(--muted); font: 600 10.5px var(--sans); }
-.term.on rect { stroke: var(--done); stroke-dasharray: none; fill: color-mix(in srgb, var(--done) 14%, transparent); }
-.term.on text { fill: var(--done); }
-.edge.hot { stroke-dasharray: 5 5; }
-.stats { gap: 6px; }
-.stat { padding: 8px 9px; min-width: 0; }
-.stat b { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stat span { display: block; font-size: 10px; letter-spacing: .4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.progress { height: 8px; background: var(--line); box-shadow: inset 0 0 0 1px var(--line2); }
+.elabel.good, .elabel .good { fill: var(--ink); }
+.elabel.bad { fill: var(--error); }
+.term rect { fill: none; stroke: var(--line2); stroke-width: 1; stroke-dasharray: 3 3; }
+.term text { fill: var(--muted); font: 600 10.5px var(--mono); }
+.term.on rect { stroke: var(--ink); stroke-dasharray: none; fill: color-mix(in srgb, var(--ink) 8%, var(--bg)); }
+.term.on text { fill: var(--ink); }
 .progress-cap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .progress-cap b { color: var(--text); font-weight: 600; margin-right: auto; }
 .progress-cap span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.progress-cap span::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--dot); }
-@media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.progress-cap span::before { content: ""; width: 8px; height: 8px; background: var(--dot); }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">
-    <svg viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
-      <rect width="32" height="32" rx="8" fill="url(#g)"/><circle cx="10" cy="11" r="3.6" fill="#fff"/><circle cx="22" cy="11" r="3.6" fill="#fff" opacity=".75"/><circle cx="16" cy="22" r="3.6" fill="#fff" opacity=".9"/>
-      <path d="M10 11L22 11L16 22Z" stroke="#fff" stroke-width="1.2" fill="none" opacity=".5"/></svg>
-    MultiAgentEngine <small>mission control</small>
+    MultiAgentEngine
   </div>
   <form class="repo" id="repoForm">
     <input type="text" id="repo" class="mono" placeholder="/path/to/the/repo/you/want/built" list="recent" autocomplete="off" aria-label="Target repository">
@@ -323,17 +343,16 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
   <span class="pill" id="status" role="status" aria-live="polite" aria-atomic="true"><span class="dot"></span><span id="statusText">Idle</span></span>
 </header>
 <nav class="tabs" role="tablist" aria-label="Views">
-  <button class="on" data-view="mission" role="tab" id="tab-mission" aria-controls="mission" aria-selected="true">Mission</button>
-  <button data-view="queue" role="tab" id="tab-queue" aria-controls="queue" aria-selected="false" tabindex="-1">Queue &amp; spec <span class="count" id="unitCount">0</span></button>
-  <button data-view="history" role="tab" id="tab-history" aria-controls="history" aria-selected="false" tabindex="-1">History <span class="count" id="runCount">0</span></button>
+  <button class="on" data-view="mission" role="tab" id="tab-mission" aria-controls="mission" aria-selected="true">Run</button>
+  <button data-view="queue" role="tab" id="tab-queue" aria-controls="queue" aria-selected="false" tabindex="-1">Plan &amp; spec <span class="count" id="unitCount">0</span></button>
+  <button data-view="history" role="tab" id="tab-history" aria-controls="history" aria-selected="false" tabindex="-1">Runs <span class="count" id="runCount">0</span></button>
 </nav>
 
 <main>
   <section class="view" id="welcome">
     <div class="welcome card">
-      <h1>Point the engine at a repository</h1>
-      <p>The repo needs <code>.mae/spec.md</code> (what to build) and <code>.mae/plan.md</code> (the work queue). Open a folder above and you can create both from here.</p>
-      <p class="welcome-hint">Type a repository path in the box at the top and press <kbd>Enter</kbd>, or pick a recent one below.</p>
+      <h1>Open a repository</h1>
+      <p>It needs <code>.mae/spec.md</code> (what to build) and <code>.mae/plan.md</code> (the work queue). Paste a path above and press <kbd>Enter</kbd>; missing files can be created after.</p>
       <div class="welcome-recent" id="welcomeRecent" hidden>
         <h2 id="welcomeRecentTitle">Recent repositories</h2>
         <ul id="welcomeRecentList" aria-labelledby="welcomeRecentTitle"></ul>
@@ -345,7 +364,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
     <div class="grid mission">
       <div class="stack">
         <div class="card pipeline">
-          <h2>Pipeline <span class="spacer"></span><span id="iterLabel" class="mono" style="text-transform:none"></span></h2>
+          <h2>Loop <span class="spacer"></span><span id="iterLabel" class="mono"></span></h2>
           <svg viewBox="0 0 400 180" aria-label="Agent pipeline: coder to tester; red goes to reviewer then back to coder; green with open units returns to coder; green with the queue closed goes to auditor, whose problems return to coder and a clean audit ends the run">
             <defs>
               <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--line2)"/></marker>
@@ -368,11 +387,11 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
             <text class="elabel" x="338" y="96" text-anchor="middle">clean</text>
             <text class="elabel" x="94" y="161" text-anchor="middle"><tspan class="good">green</tspan> + open units</text>
             <text class="elabel" x="213" y="165" text-anchor="middle">problems</text>
-            <g class="node" id="n-reviewer" style="--c:var(--reviewer)"><rect x="54" y="4" width="72" height="46" rx="11"/><rect class="ring" x="50" y="0" width="80" height="54" rx="14"/><text x="64" y="23">Reviewer</text><text class="sub" x="64" y="39" id="a-reviewer" clip-path="url(#cl-rev)">codex</text></g>
-            <g class="node" id="n-coder" style="--c:var(--coder)"><rect x="4" y="80" width="72" height="46" rx="11"/><rect class="ring" x="0" y="76" width="80" height="54" rx="14"/><text x="14" y="99">Coder</text><text class="sub" x="14" y="115" id="a-coder" clip-path="url(#cl-cod)">claude</text></g>
-            <g class="node" id="n-tester" style="--c:var(--tester)"><rect x="102" y="80" width="72" height="46" rx="11"/><rect class="ring" x="98" y="76" width="80" height="54" rx="14"/><text x="112" y="99">Tester</text><text class="sub" x="112" y="115" id="a-tester" clip-path="url(#cl-tes)">gates</text></g>
-            <g class="node" id="n-auditor" style="--c:var(--auditor)"><rect x="250" y="80" width="72" height="46" rx="11"/><rect class="ring" x="246" y="76" width="80" height="54" rx="14"/><text x="260" y="99">Auditor</text><text class="sub" x="260" y="115" id="a-auditor" clip-path="url(#cl-aud)">codex</text></g>
-            <g class="term" id="n-done"><rect x="354" y="88" width="42" height="30" rx="15"/><text x="375" y="107" text-anchor="middle">done</text></g>
+            <g class="node" id="n-reviewer"><rect x="54" y="4" width="72" height="46" rx="2"/><text x="64" y="23">Reviewer</text><text class="sub" x="64" y="39" id="a-reviewer" clip-path="url(#cl-rev)">codex</text></g>
+            <g class="node" id="n-coder"><rect x="4" y="80" width="72" height="46" rx="2"/><text x="14" y="99">Coder</text><text class="sub" x="14" y="115" id="a-coder" clip-path="url(#cl-cod)">claude</text></g>
+            <g class="node" id="n-tester"><rect x="102" y="80" width="72" height="46" rx="2"/><text x="112" y="99">Tester</text><text class="sub" x="112" y="115" id="a-tester" clip-path="url(#cl-tes)">gates</text></g>
+            <g class="node" id="n-auditor"><rect x="250" y="80" width="72" height="46" rx="2"/><text x="260" y="99">Auditor</text><text class="sub" x="260" y="115" id="a-auditor" clip-path="url(#cl-aud)">codex</text></g>
+            <g class="term" id="n-done"><rect x="354" y="88" width="42" height="30" rx="2"/><text x="375" y="107" text-anchor="middle">done</text></g>
           </svg>
           <div class="stats">
             <div class="stat" title="Coder passes"><b id="sIter">0</b><span>passes</span></div>
@@ -385,16 +404,16 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
         </div>
 
         <div class="card" id="launchCard">
-          <h2>Launch</h2>
+          <h2>Start a run</h2>
           <div class="roles">
             <div><label for="r-coder">Coder</label><select id="r-coder"></select><div class="rstat" id="rs-coder"></div><input type="text" class="model" id="m-coder" aria-label="Coder model" spellcheck="false"></div>
             <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><div class="rstat" id="rs-reviewer"></div><input type="text" class="model" id="m-reviewer" aria-label="Reviewer model" spellcheck="false"></div>
             <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><div class="rstat" id="rs-auditor"></div><input type="text" class="model" id="m-auditor" aria-label="Auditor model" spellcheck="false"></div>
           </div>
-          <button class="btn small" id="freeBtn" style="margin-top:8px" title="Free local model through Ollama: no subscription, no API key">Use free models for every role</button>
+          <button class="btn small" id="freeBtn" title="Local model via Ollama: no subscription, no API key">Use Ollama for all three</button>
           <details>
-            <summary>Gates, iterations, git</summary>
-            <div class="field"><label for="gates">Gates — one command per line (blank = repo config or defaults)</label>
+            <summary>Gates, pass limit, git</summary>
+            <div class="field"><label for="gates">Gates, one command per line (blank: repo config or defaults)</label>
               <textarea id="gates" spellcheck="false"></textarea></div>
             <div class="row field">
               <div><label for="maxIter">Max coder passes</label><input type="number" id="maxIter" min="1" style="width:110px"></div>
@@ -404,9 +423,9 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
           </details>
           <div id="launchWarn"></div>
           <div class="row" style="margin-top:14px">
-            <button class="btn primary" id="startBtn">▶ Launch run</button>
-            <button class="btn danger" id="stopBtn" disabled>■ Stop</button>
-            <span id="launchHint" style="color:var(--muted);font-size:12px"></span>
+            <button class="btn primary" id="startBtn">Start run</button>
+            <button class="btn danger" id="stopBtn" disabled>Stop</button>
+            <span id="launchHint"></span>
           </div>
           <div class="launchwhy" id="launchWhy" role="status"></div>
         </div>
@@ -417,30 +436,30 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
         </div>
       </div>
 
-      <div class="card" style="display:flex;flex-direction:column">
-        <h2>Live console <span class="spacer"></span>
+      <div class="card concard">
+        <h2>Output <span class="spacer"></span>
           <span class="filters" id="filters">
             <button class="on" data-f="all">all</button><button data-f="coder">coder</button><button data-f="tester">tester</button>
             <button data-f="reviewer">reviewer</button><button data-f="auditor">auditor</button><button data-f="git">git</button>
           </span>
-          <label class="check" style="text-transform:none;letter-spacing:0"><input type="checkbox" id="follow" checked> follow</label>
+          <label class="check"><input type="checkbox" id="follow" checked> follow</label>
           <button class="btn small" id="clearCon" title="Clear the console view (the run keeps going)">Clear</button>
         </h2>
         <div class="conwrap">
           <div class="console" id="console" role="log" aria-live="off" aria-label="Run output"></div>
           <div class="conempty" id="conEmpty"></div>
-          <button class="btn small jump" id="jumpLatest" hidden>↓ Jump to latest</button>
+          <button class="btn small jump" id="jumpLatest" hidden>Jump to latest</button>
         </div>
       </div>
     </div>
   </section>
 
   <section class="view" id="queue" role="tabpanel" aria-labelledby="tab-queue">
-    <div class="card" style="margin-bottom:16px">
+    <div class="card qcard">
       <h2>Work queue <span class="spacer"></span><span class="mono path" id="planPath"></span></h2>
-      <form class="row" id="addUnit" style="margin-bottom:14px">
-        <input type="text" id="newUnit" placeholder="New unit, e.g. Rate limiting per user" style="flex:1;min-width:200px">
-        <input type="text" id="newNote" placeholder="note (optional)" style="flex:1;min-width:160px">
+      <form class="row addunit" id="addUnit">
+        <input type="text" id="newUnit" placeholder="Unit name">
+        <input type="text" id="newNote" placeholder="Note (optional)">
         <button class="btn primary" type="submit">Add as TODO</button>
       </form>
       <div id="unparsed"></div>
@@ -448,33 +467,32 @@ nav.tabs button:focus-visible { outline-offset: -2px; box-shadow: none; border-r
     </div>
     <div class="grid docs">
       <div class="card">
-        <h2>Spec <span class="dirty-mark" id="dirty-spec" hidden>● unsaved</span><span class="spacer"></span><span class="mono path" id="specPath"></span>
+        <h2>Spec <span class="dirty-mark" id="dirty-spec" hidden>unsaved</span><span class="spacer"></span><span class="mono path" id="specPath"></span>
           <button class="btn small" data-save="spec">Save</button></h2>
         <textarea class="editor" id="ed-spec" spellcheck="false"></textarea>
       </div>
       <div class="card">
-        <h2>Plan <span class="dirty-mark" id="dirty-plan" hidden>● unsaved</span><span class="spacer"></span><button class="btn small" data-save="plan">Save</button></h2>
+        <h2>Plan <span class="dirty-mark" id="dirty-plan" hidden>unsaved</span><span class="spacer"></span><button class="btn small" data-save="plan">Save</button></h2>
         <textarea class="editor" id="ed-plan" spellcheck="false"></textarea>
       </div>
-      <div class="card" style="grid-column:1/-1">
-        <h2><span style="text-transform:none;letter-spacing:0">.mae/config.json</span> <span class="dirty-mark" id="dirty-config" hidden>● unsaved</span><span class="spacer"></span><button class="btn small" data-save="config">Save</button></h2>
-        <textarea class="editor" id="ed-config" spellcheck="false" style="min-height:140px" aria-describedby="configErr" placeholder='e.g. {"agents": {"reviewer": "claude"}, "max_iterations": 20}'></textarea>
+      <div class="card cfg">
+        <h2><span class="mono" style="font-size:13px">.mae/config.json</span> <span class="dirty-mark" id="dirty-config" hidden>unsaved</span><span class="spacer"></span><button class="btn small" data-save="config">Save</button></h2>
+        <textarea class="editor" id="ed-config" spellcheck="false" aria-describedby="configErr" placeholder='e.g. {"agents": {"reviewer": "claude"}, "max_iterations": 20}'></textarea>
         <div class="json-err" id="configErr" role="alert" hidden></div>
       </div>
     </div>
-    <p style="color:var(--muted);font-size:12px">Tip: <kbd>Ctrl</kbd>+<kbd>S</kbd> saves the editor you are in.</p>
+    <p class="tip"><kbd>Ctrl</kbd>+<kbd>S</kbd> saves the focused editor.</p>
   </section>
 
   <section class="view" id="history" role="tabpanel" aria-labelledby="tab-history">
     <div class="card hist-empty" id="historyEmpty" hidden>
-      <div class="hist-empty-icon" aria-hidden="true">⟲</div>
       <h3>No runs yet</h3>
-      <p>Runs appear here after you launch one from the Mission tab: each with its timeline, checkpoint commits and diffs.</p>
+      <p>Start one from the Run tab. Each run lists its timeline, checkpoint commits and diffs here.</p>
       <button class="btn small" id="refreshRunsEmpty">Refresh</button>
     </div>
     <div class="grid history" id="historyGrid">
       <div class="card"><h2>Runs <span class="spacer"></span><button class="btn small" id="refreshRuns">Refresh</button></h2><div class="runs" id="runs"></div></div>
-      <div class="stack" id="runDetail"><div class="card"><div class="empty">Pick a run to see its timeline and checkpoint commits.</div></div></div>
+      <div class="stack" id="runDetail"><div class="card"><div class="empty">Select a run.</div></div></div>
     </div>
   </section>
 </main>
@@ -640,12 +658,12 @@ $("freeBtn").addEventListener("click", () => {
   for (const r of ROLES) { $("r-" + r).value = "ollama"; $("m-" + r).value = ""; }
   agentsChanged();
   const o = S && S.runners.ollama;
-  toast(`Coder, reviewer and auditor now use ollama${o && o.model ? ` (${o.model})` : ""}` + (o && !o.ready ? ". Ollama isn't ready yet — see the note under Launch run." : "."), !!(o && !o.ready));
+  toast(`Coder, reviewer and auditor now use ollama${o && o.model ? ` (${o.model})` : ""}` + (o && !o.ready ? ". Ollama isn't ready: see the note under Start run." : "."), !!(o && !o.ready));
 });
 ["gates", "maxIter", "noGit", "noGates"].forEach((id) => $(id).addEventListener("change", () =>
   store.set("opts:" + repo, { gates: $("gates").value, maxIter: $("maxIter").value, noGit: $("noGit").checked, noGates: $("noGates").checked })));
 
-// why "Launch run" is disabled right now ("" = it can launch); renderLive and the click handler share it
+// why "Start run" is disabled right now ("" = it can launch); renderLive and the click handler share it
 function launchBlocker() {
   if (live.running) return "";
   if (!S) return "Open a repository first.";
@@ -658,7 +676,7 @@ function launchBlocker() {
   const list = (a) => a.length > 1 ? a.slice(0, -1).join(", ") + " and " + a[a.length - 1] : a[0];
   const ollamaOk = S.runners.ollama && S.runners.ollama.ready && !bad.has("ollama");
   return [...bad].map(([name, roles]) => `${list(roles)} ${roles.length > 1 ? "need" : "needs"} ${name}, which is not ready: ${S.runners[name].why.replace(/\.$/, "")}.`).join(" ")
-    + (ollamaOk ? " Pick another runner or Use free models." : " Pick another runner.");
+    + (ollamaOk ? " Pick another runner or use Ollama for all three." : " Pick another runner.");
 }
 function renderLaunchState() {
   const why = launchBlocker();
@@ -672,14 +690,14 @@ function renderLaunchWarnings() {
   const warn = (msg, bad) => box.append(el("div", { class: "warn" + (bad ? " err" : "") }, msg));
   if (S.docs.spec === null || S.docs.plan === null) {
     const b = el("button", { class: "btn small", style: "margin-left:8px", onclick: guard(async () => {
-      S = await api("init", { repo }); renderState(true); toast("Created spec and plan — describe the work in the Queue & spec tab");
+      S = await api("init", { repo }); renderState(true); toast("Created spec and plan. Describe the work under Plan & spec.");
     }) }, "Create them");
     box.append(el("div", { class: "warn err" }, `Missing ${[S.docs.spec === null && "spec", S.docs.plan === null && "plan"].filter(Boolean).join(" and ")}.`, b));
   }
   // runners that are not ready are explained next to the Launch button (launchBlocker), not here
   if (!live.running && S.units.length && !S.units.some((u) => u.state === "TODO" || u.state === "IN_PROGRESS"))
-    warn("Nothing is open: every unit is DONE or BLOCKED. Add or reopen a unit first.");
-  if (!S.git.is_repo && !$("noGit").checked) warn("Not a git repository: the run works, but without checkpoints to roll back to.");
+    warn("Every unit is DONE or BLOCKED. Add or reopen one first.");
+  if (!S.git.is_repo && !$("noGit").checked) warn("Not a git repo: no checkpoints to roll back to.");
   $("launchHint").textContent = S.git.is_repo ? `on ${S.git.branch}` : "";
   renderLaunchState();
 }
@@ -696,21 +714,21 @@ function unitRow(u, editable) {
     kids.push(el("div", { class: "ctl" }, sel, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
       if (!confirm(`Delete “${u.name}” from the queue?`)) return;
       S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
-    }) }, "✕")));
+    }) }, "Delete")));
   } else kids.push(chip(u.state));
   return el("div", { class: "unit" + (editable ? " edit" : "") }, ...kids);
 }
 function renderUnits() {
   const units = S.units;
   $("miniUnits").replaceChildren(...(units.length ? units.map((u) => unitRow(u, false))
-    : [el("div", { class: "empty" }, S.docs.plan === null ? "No plan yet." : "No status block yet — the coder writes it from the spec on the first pass.")]));
+    : [el("div", { class: "empty" }, S.docs.plan === null ? "No plan yet." : "Empty. The coder fills it on the first pass.")]));
   $("board").replaceChildren(...STATES.map((s) => {
     const mine = units.filter((u) => u.state === s);
     return el("div", { class: "col" }, el("h3", {}, chip(s), el("span", { style: "color:var(--muted)" }, mine.length)),
-      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true)) : [el("div", { class: "col-empty" }, "Nothing here")])));
+      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true)) : [el("div", { class: "col-empty" }, "None")])));
   }));
-  $("unparsed").replaceChildren(...S.unparsed.map((l) => el("div", { class: "warn err", style: "margin:0 0 8px" },
-    "This line in the plan's status block can't be read, so the engine ignores it. Use ", el("code", {}, "Name: STATE — note"), ".",
+  $("unparsed").replaceChildren(...S.unparsed.map((l) => el("div", { class: "warn err" },
+    "Ignored, can't parse this status line. Format: ", el("code", {}, "Name: STATE — note"), ".",
     el("code", { class: "unparsed-line" }, l))));
   syncDirty(); if (!$("ed-config").dataset.dirty) showConfigError();
   const n = units.length || 1, count = (s) => units.filter((u) => u.state === s).length;
@@ -731,7 +749,7 @@ $("addUnit").addEventListener("submit", guard(async (e) => {
 const EDITORS = ["spec", "plan", "config"];
 // long paths: the CSS truncates from the start; LRMs keep the leading "/" on the left under direction:rtl
 function setPath(id, path) { const n = $(id); n.textContent = path ? "‎" + path + "‎" : ""; n.title = path || ""; }
-// "● unsaved" in each editor's card header
+// "unsaved" in each editor's card header
 function syncDirty() { for (const k of EDITORS) $("dirty-" + k).hidden = !$("ed-" + k).dataset.dirty; }
 // config: returns the parse error message, or "" when the text is empty or a JSON object
 function configError() {
@@ -739,7 +757,7 @@ function configError() {
   if (!text.trim()) return "";
   try {
     const v = JSON.parse(text);
-    return v && typeof v === "object" && !Array.isArray(v) ? "" : "config must be a JSON object, like { … }";
+    return v && typeof v === "object" && !Array.isArray(v) ? "" : "config must be a JSON object";
   } catch (e) { return "Invalid JSON: " + e.message; }
 }
 function showConfigError() {
@@ -778,7 +796,7 @@ $("startBtn").addEventListener("click", guard(async () => {
   };
   await api("run", body);
   lines = []; outNext = 0; live = { node: null, passes: 0, errors: null, audit: null, cost: 0, running: true, ended: null };
-  $("console").replaceChildren(); conState(); toast("Run launched"); poll();
+  $("console").replaceChildren(); conState(); toast("Run started"); poll();
 }));
 $("stopBtn").addEventListener("click", guard(async () => {
   if (!confirm("Stop the run? The agent is killed; finished passes stay committed on the engine branch.")) return;
@@ -786,7 +804,6 @@ $("stopBtn").addEventListener("click", guard(async () => {
 }));
 
 /* ---------- console ---------- */
-const TAGS = { coder: "var(--coder)", tester: "var(--tester)", reviewer: "var(--reviewer)", auditor: "var(--auditor)", git: "var(--git)", ui: "var(--accent)" };
 function classify(text) {
   let m = text.match(/^--- (\w+) ---$/);
   if (m) return { kind: "hdr", who: m[1] };
@@ -810,9 +827,9 @@ function ingest(text) {
 }
 function renderLine(text, c) {
   if (filter !== "all" && c.who !== filter && !(filter === "tester" && c.kind === "plain" && c.who === "tester")) return null;
-  if (c.kind === "hdr") return el("div", { class: "l hdr", style: `--c:${TAGS[c.who] || "var(--accent)"}` }, c.who.toUpperCase());
+  if (c.kind === "hdr") return el("div", { class: "l hdr" }, c.who.toUpperCase());
   const cls = /error|failed|Aborted|WARNING|Traceback/i.test(text) && !/ 0 error/.test(text) ? " bad" : /green|0 error|clean|Finished/.test(text) ? " good" : "";
-  if (c.kind === "tag") return el("div", { class: "l" + cls }, el("span", { class: "tag", style: `color:${TAGS[c.who] || "var(--muted)"}` }, `[${c.who}]`), c.rest);
+  if (c.kind === "tag") return el("div", { class: "l" + cls }, el("span", { class: "tag" }, `[${c.who}]`), c.rest);
   return el("div", { class: "l" + (c.who === "tester" ? " dim" : "") + cls }, text);
 }
 function redraw() {
@@ -824,7 +841,7 @@ function redraw() {
 function conState() {
   const box = $("console"), empty = $("conEmpty");
   empty.textContent = box.childElementCount ? "" : !lines.length || filter === "all"
-    ? "No output yet. Launch a run and every agent's output streams here." : `No ${filter} lines yet.`;
+    ? "No output yet." : `No ${filter} lines yet.`;
   empty.hidden = !!box.childElementCount;
   $("jumpLatest").hidden = !$("follow").checked || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
 }
@@ -856,7 +873,7 @@ function renderLive() {
   $("iterLabel").textContent = live.node ? `now: ${live.node}` : "";
   const pill = $("status");
   pill.className = "pill" + (live.running ? " running" : live.ended === 0 ? " clean" : live.ended !== null ? " failed" : "");
-  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Finished clean" : live.ended === 2 ? "Finished · needs review" : `Ended (exit ${live.ended})`;
+  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Done, clean" : live.ended === 2 ? "Done, needs review" : `Ended (exit ${live.ended})`;
   renderLaunchState();
 }
 
@@ -894,7 +911,7 @@ const evText = (e) => {
   if (e.event === "finish") return `tests_passed=${e.tests_passed} audit_clean=${e.audit_clean} · ${e.iterations} pass(es)`;
   return Object.entries(e).filter(([k]) => !skip.has(k)).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  ");
 };
-const EVC = { start: "var(--accent)", agent: "var(--coder)", gate: "var(--tester)", checkpoint: "var(--git)", reopen: "var(--auditor)", limit: "var(--prog)", finish: "var(--done)", aborted: "var(--blocked)" };
+const EVC = { start: "var(--accent)", aborted: "var(--error)" };
 
 async function loadRuns() {
   if (!repo) return;
@@ -917,23 +934,23 @@ $("refreshRunsEmpty").addEventListener("click", guard(loadRuns));
 async function showRun(r) {
   const detail = $("runDetail"), ticket = (showRun.ticket = (showRun.ticket || 0) + 1);
   detail.setAttribute("aria-busy", "true");
-  detail.replaceChildren(el("div", { class: "card" }, el("h2", {}, "Run ", el("span", { class: "mono", style: "text-transform:none;letter-spacing:0" }, r.name)),
-    el("div", { class: "run-loading", role: "status" }, "Loading timeline…")));
+  detail.replaceChildren(el("div", { class: "card" }, el("h2", {}, "Run ", el("span", { class: "mono" }, r.name)),
+    el("div", { class: "run-loading", role: "status" }, "Loading…")));
   let events;
   try { events = await api("runlog?" + q({ repo, name: r.name })); }
   catch (e) {
-    if (ticket === showRun.ticket) { detail.removeAttribute("aria-busy"); detail.replaceChildren(el("div", { class: "card" }, el("div", { class: "warn err", style: "margin:0" }, "Couldn't load this run: " + e.message))); }
+    if (ticket === showRun.ticket) { detail.removeAttribute("aria-busy"); detail.replaceChildren(el("div", { class: "card" }, el("div", { class: "warn err" }, "Couldn't load this run: " + e.message))); }
     return;
   }
   if (ticket !== showRun.ticket) return;   // another run was picked while this one loaded
   detail.removeAttribute("aria-busy");
   const timeline = el("div", { class: "timeline" }, ...events.map((e) =>
-    el("div", { class: "ev" }, el("span", { class: "t" }, fmtTime(e.ts)), el("span", { class: "k", style: `color:${EVC[e.event] || "var(--muted)"}` }, e.event), el("span", { class: "d" }, evText(e)))));
-  const cards = [el("div", { class: "card" }, el("h2", {}, "Timeline ", el("span", { class: "spacer" }), r.error ? el("span", { class: "badge b-aborted", style: "text-transform:none" }, r.error) : null), timeline)];
+    el("div", { class: "ev" }, el("span", { class: "t" }, fmtTime(e.ts)), el("span", { class: "k", style: `color:${EVC[e.event] || "var(--text)"}` }, e.event), el("span", { class: "d" }, evText(e)))));
+  const cards = [el("div", { class: "card" }, el("h2", {}, "Timeline ", el("span", { class: "spacer" }), r.error ? el("span", { class: "badge b-aborted" }, r.error) : null), timeline)];
   if (r.branch && r.base_sha) {
     const diffBox = el("div");
-    const commits = el("div", {}, el("div", { class: "run-loading", role: "status" }, "Loading commits…"));
-    cards.unshift(el("div", { class: "card" }, el("h2", {}, "Checkpoint commits ", el("span", { class: "spacer" }), el("span", { class: "mono", style: "text-transform:none;letter-spacing:0" }, r.branch)), commits, diffBox));
+    const commits = el("div", {}, el("div", { class: "run-loading", role: "status" }, "Loading…"));
+    cards.unshift(el("div", { class: "card" }, el("h2", {}, "Checkpoint commits ", el("span", { class: "spacer" }), el("span", { class: "mono" }, r.branch)), commits, diffBox));
     api("commits?" + q({ repo, base: r.base_sha, branch: r.branch })).then(({ log }) => {
       const rows = []; let cur = null;
       for (const line of log.split("\n")) {
@@ -942,12 +959,12 @@ async function showRun(r) {
         else if (cur && line.trim()) cur.stat = line.trim().replace(/ files? changed/, "f").replace(/ insertions?\(\+\)/, "+").replace(/ deletions?\(-\)/, "−");
       }
       commits.replaceChildren(...(rows.length ? rows.map((c) => el("button", { class: "commit", onclick: guard(async () => {
-        diffBox.replaceChildren(el("div", { class: "run-loading", role: "status" }, "Loading diff…"));
+        diffBox.replaceChildren(el("div", { class: "run-loading", role: "status" }, "Loading…"));
         const { diff } = await api("show?" + q({ repo, sha: c.sha })).catch((e) => (diffBox.replaceChildren(), Promise.reject(e)));
         diffBox.replaceChildren(el("pre", { class: "diff" }, ...diff.split("\n").map((l) =>
           el("span", { class: l.startsWith("diff --git") ? "f" : l.startsWith("@@") ? "h" : l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "r" : "" }, l || " "))));
-      }) }, el("span", { class: "sha" }, c.sha), el("span", { class: "t mono", style: "color:var(--faint);font-size:12px" }, c.time), el("span", {}, c.msg), el("span", { class: "stat" }, c.stat)))
-        : [el("div", { class: "empty" }, "No commits on this branch (deleted, or the run made none).")]));
+      }) }, el("span", { class: "sha" }, c.sha), el("span", { class: "t mono" }, c.time), el("span", {}, c.msg), el("span", { class: "stat" }, c.stat)))
+        : [el("div", { class: "empty" }, "No commits on this branch.")]));
     }).catch((e) => commits.replaceChildren(el("div", { class: "empty" }, e.message)));
   }
   detail.replaceChildren(...cards);
