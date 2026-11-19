@@ -132,7 +132,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .unit[data-state=BLOCKED] { border-left-color: var(--error); }
 .unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1.4 var(--mono); color: var(--text); }
 .unit .name .note { color: var(--muted); font: 400 11.5px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip { font: 600 11px var(--mono); padding: 2px 6px; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
+.chip { font: 500 12.5px/1.2 var(--mono); display: inline-flex; align-items: center; padding: 2px 7px; transition: color .18s ease-out, border-color .18s ease-out, background-color .18s ease-out; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
 .s-TODO { color: var(--faint); border-color: var(--line2); }
 .s-IN_PROGRESS { color: var(--accent); border-color: var(--accent); }
 .s-DONE { color: var(--bg); background: var(--ink); border-color: var(--ink); }
@@ -141,7 +141,13 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .empty { color: var(--muted); text-align: center; padding: 22px 10px; border: 1px dashed var(--line2); border-radius: var(--r); font-size: 13px; }
 .board { grid-template-columns: repeat(4, 1fr); }
 .col h3 { margin: 0 0 8px; font: 400 15px/1.3 var(--serif); display: flex; gap: 6px; align-items: center; }
-.col h3 > :last-child { font: 400 11px var(--mono); color: var(--muted); }
+.col h3 > :last-child { font: 400 11px/1 var(--mono); color: var(--muted); }
+/* a unit landing in its new column: fade + settle from slightly above, with a fading accent tint */
+@keyframes arrive {
+  from { opacity: 0; transform: translateY(-7px); background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
+  to { opacity: 1; transform: none; background: var(--panel2); }
+}
+.unit.moved { animation: arrive .5s cubic-bezier(.2, .7, .3, 1); }
 
 /* console */
 .console { background: var(--con-bg); border: 0; border-radius: 0; height: calc(100vh - 250px); min-height: 360px;
@@ -334,6 +340,13 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .btn, select, input[type=text], input[type=number] { min-height: 34px; }
 .btn.small, .unit select, .icon-btn { min-height: 26px; height: 26px; padding-top: 0; padding-bottom: 0; }
 .btn { justify-content: center; }
+/* == motion: short ease-out fades, no bounce; the reduced-motion block above turns it all off == */
+@keyframes mae-in { from { opacity: 0; transform: translateY(4px); } }
+.view.on, details[open] > :not(summary) { animation: mae-in .18s ease-out; }
+.console .l { animation: mae-in .15s ease-out; }
+.btn, .icon-btn, nav.tabs button, .filters button, input, select, textarea { transition: color .15s ease-out, background-color .15s ease-out, border-color .15s ease-out; }
+.btn:active:not(:disabled), .icon-btn:active { transform: translateY(1px); }
+.unit { transition: border-color .18s ease-out, background-color .18s ease-out; }
 </style>
 </head>
 <body>
@@ -466,7 +479,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
       <form class="row addunit" id="addUnit">
         <input type="text" id="newUnit" placeholder="Unit name">
         <input type="text" id="newNote" placeholder="Note (optional)">
-        <button class="btn primary" type="submit">Add as TODO</button>
+        <button class="btn primary" type="submit">Add to do</button>
       </form>
       <div id="unparsed"></div>
       <div class="grid board" id="board"></div>
@@ -528,6 +541,7 @@ let S = null;            // last /api/state
 let repo = decodeURIComponent(location.hash.slice(1)) || store.get("repo", "");
 let outNext = 0, lines = [], filter = "all";
 let live = { node: null, passes: 0, errors: null, audit: null, cost: 0, running: false, ended: null };
+let boardSeen = null;    // unit name -> state at the last board render; null = first render, nothing slides
 
 async function api(path, body) {
   const res = await fetch("/api/" + path, {
@@ -603,6 +617,7 @@ async function refreshState() { if (repo) { S = await api("state?" + q({ repo })
 
 function renderState(fresh) {
   if (!S) return;
+  if (fresh) boardSeen = null;  // a new repo render is not a state change; nothing should slide
   const units = S.units;
   $("unitCount").textContent = units.length;
   setPath("planPath", S.paths.plan);
@@ -709,30 +724,33 @@ function renderLaunchWarnings() {
 }
 
 /* ---------- units ---------- */
-const chip = (s) => el("span", { class: "chip s-" + s }, s.replace("_", " "));
-function unitRow(u, editable) {
+const STATE_LABEL = { TODO: "To do", IN_PROGRESS: "In progress", DONE: "Done", BLOCKED: "Blocked" };  // display only; the API keeps the real states
+const chip = (s) => el("span", { class: "chip s-" + s }, STATE_LABEL[s]);
+function unitRow(u, editable, moved = false) {
   const kids = [el("div", { class: "name" }, el("div", { title: u.name }, u.name), u.note ? el("div", { class: "note", title: u.note }, u.note) : null)];
   if (editable) {
     const sel = el("select", { "aria-label": "State of " + u.name, onchange: guard(async () => {
       S = await api("unit", { repo, name: u.name, state: sel.value }); renderState(false);
-    }) }, ...STATES.map((s) => el("option", { value: s }, s)));
+    }) }, ...STATES.map((s) => el("option", { value: s }, STATE_LABEL[s])));
     sel.value = u.state;
     kids.push(el("div", { class: "ctl" }, sel, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
       if (!confirm(`Delete “${u.name}” from the queue?`)) return;
       S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
     }) }, "Delete")));
   } else kids.push(chip(u.state));
-  return el("div", { class: "unit" + (editable ? " edit" : ""), "data-state": u.state }, ...kids);
+  return el("div", { class: "unit" + (editable ? " edit" : "") + (moved ? " moved" : ""), "data-state": u.state }, ...kids);
 }
 function renderUnits() {
   const units = S.units;
   $("miniUnits").replaceChildren(...(units.length ? units.map((u) => unitRow(u, false))
     : [el("div", { class: "empty" }, S.docs.plan === null ? "No plan yet." : "Empty. The coder fills it on the first pass.")]));
+  const changed = new Set(boardSeen ? units.filter((u) => boardSeen.get(u.name) !== u.state).map((u) => u.name) : []);
   $("board").replaceChildren(...STATES.map((s) => {
     const mine = units.filter((u) => u.state === s);
     return el("div", { class: "col" }, el("h3", {}, chip(s), el("span", { style: "color:var(--muted)" }, mine.length)),
-      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true)) : [el("div", { class: "col-empty" }, "None")])));
+      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true, changed.has(u.name))) : [el("div", { class: "col-empty" }, "None")])));
   }));
+  boardSeen = new Map(units.map((u) => [u.name, u.state]));
   $("unparsed").replaceChildren(...S.unparsed.map((l) => el("div", { class: "warn err" },
     "Ignored, can't parse this status line. Format: ", el("code", {}, "Name: STATE — note"), ".",
     el("code", { class: "unparsed-line" }, l))));
