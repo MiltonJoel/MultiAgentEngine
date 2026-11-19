@@ -132,7 +132,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .unit[data-state=BLOCKED] { border-left-color: var(--error); }
 .unit .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1.4 var(--mono); color: var(--text); }
 .unit .name .note { color: var(--muted); font: 400 11.5px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip { font: 500 12.5px/1.2 var(--mono); display: inline-flex; align-items: center; padding: 2px 7px; transition: color .18s ease-out, border-color .18s ease-out, background-color .18s ease-out; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
+.chip { font: 500 12.5px/1.2 var(--mono); display: inline-flex; align-items: center; padding: 2px 7px; transition: color .4s ease-out, border-color .4s ease-out, background-color .4s ease-out; border-radius: var(--r); border: 1px solid; white-space: nowrap; }
 .s-TODO { color: var(--faint); border-color: var(--line2); }
 .s-IN_PROGRESS { color: var(--accent); border-color: var(--accent); }
 .s-DONE { color: var(--bg); background: var(--ink); border-color: var(--ink); }
@@ -144,10 +144,10 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .col h3 > :last-child { font: 400 11px/1 var(--mono); color: var(--muted); }
 /* a unit landing in its new column: fade + settle from slightly above, with a fading accent tint */
 @keyframes arrive {
-  from { opacity: 0; transform: translateY(-7px); background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
+  from { opacity: 0; transform: translateY(-12px); background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
   to { opacity: 1; transform: none; background: var(--panel2); }
 }
-.unit.moved { animation: arrive .5s cubic-bezier(.2, .7, .3, 1); }
+.unit.moved { animation: arrive .8s cubic-bezier(.2, .7, .3, 1); }
 
 /* console */
 .console { background: var(--con-bg); border: 0; border-radius: 0; height: calc(100vh - 250px); min-height: 360px;
@@ -341,12 +341,12 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .btn.small, .unit select, .icon-btn { min-height: 26px; height: 26px; padding-top: 0; padding-bottom: 0; }
 .btn { justify-content: center; }
 /* == motion: short ease-out fades, no bounce; the reduced-motion block above turns it all off == */
-@keyframes mae-in { from { opacity: 0; transform: translateY(4px); } }
-.view.on, details[open] > :not(summary) { animation: mae-in .18s ease-out; }
-.console .l { animation: mae-in .15s ease-out; }
-.btn, .icon-btn, nav.tabs button, .filters button, input, select, textarea { transition: color .15s ease-out, background-color .15s ease-out, border-color .15s ease-out; }
+@keyframes mae-in { from { opacity: 0; transform: translateY(10px); } }
+.view.on, details[open] > :not(summary) { animation: mae-in .4s cubic-bezier(.2, .7, .3, 1); }
+.console .l { animation: mae-in .3s ease-out; }
+.btn, .icon-btn, nav.tabs button, .filters button, input, select, textarea { transition: color .3s ease-out, background-color .3s ease-out, border-color .3s ease-out; }
 .btn:active:not(:disabled), .icon-btn:active { transform: translateY(1px); }
-.unit { transition: border-color .18s ease-out, background-color .18s ease-out; }
+.unit { transition: border-color .4s ease-out, background-color .4s ease-out; }
 </style>
 </head>
 <body>
