@@ -205,6 +205,16 @@ pre.diff .f { color: var(--con-ink); font-weight: 700; margin-top: 8px; }
 .reveal > pre.diff { margin: 0; overflow: hidden; min-height: 0; opacity: 0; transition: opacity .25s ease; }
 .reveal.on { grid-template-rows: 1fr; }
 .reveal.on > pre.diff { overflow: auto; opacity: 1; }
+/* answering a BLOCKED unit: an inline panel under the tile, same ease as the diff reveal */
+.unblock-reveal { margin-top: 4px; }
+.reveal > .unblock { overflow: hidden; min-height: 0; opacity: 0; transition: opacity .25s ease; }
+.reveal.on > .unblock { opacity: 1; }
+.unblock { display: grid; gap: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line);
+  border-left: 2px solid var(--accent); border-radius: var(--r); }
+.unblock textarea { width: 100%; min-height: 52px; resize: vertical; font: 12px/1.5 var(--mono); }
+.unblock-hint { color: var(--muted); font: 400 11px var(--mono); }
+.blocked-note { margin: 0; color: var(--muted); font-size: 12px; }
+.blocked-note b { color: var(--error); font-weight: 500; }
 
 .toast { position: fixed; bottom: 18px; right: 18px; background: var(--bg); border: 1px solid var(--ink); padding: 10px 14px;
   border-radius: var(--r); max-width: 440px; transform: translateY(120px); opacity: 0; transition: transform .2s, opacity .2s; z-index: 50; }
@@ -750,8 +760,13 @@ function renderLaunchWarnings() {
     box.append(el("div", { class: "warn err" }, `Missing ${[S.docs.spec === null && "spec", S.docs.plan === null && "plan"].filter(Boolean).join(" and ")}.`, b));
   }
   // runners that are not ready are explained next to the Launch button (launchBlocker), not here
-  if (!live.running && S.units.length && !S.units.some((u) => u.state === "TODO" || u.state === "IN_PROGRESS"))
-    warn("Every unit is DONE or BLOCKED. Add or reopen one first.");
+  if (!live.running && S.units.length && !S.units.some((u) => u.state === "TODO" || u.state === "IN_PROGRESS")) {
+    const blocked = S.units.filter((x) => x.state === "BLOCKED").length;
+    const jump = blocked ? el("button", { class: "btn small", onclick: () => show("queue") },
+      `Resolve ${blocked} blocked unit${blocked > 1 ? "s" : ""}`) : null;
+    box.append(el("div", { class: "warn" }, blocked ? "Every open unit is blocked — answer one and the run can proceed. " : "",
+      jump || "Every unit is DONE or BLOCKED. Add or reopen one first."));
+  }
   if (!S.git.is_repo && !$("noGit").checked) warn("Not a git repo: no checkpoints to roll back to.");
   $("launchHint").textContent = S.git.is_repo ? `on ${S.git.branch}` : "";
   renderLaunchState();
@@ -812,7 +827,10 @@ function unitRow(u, editable, cls = "") {
       S = await api("unit", { repo, name: u.name, state: sel.value }); renderState(false);
     }) }, ...STATES.map((s) => el("option", { value: s }, STATE_LABEL[s])));
     sel.value = u.state;
-    kids.push(el("div", { class: "ctl" }, chip(u.state), sel, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
+    // a blocked unit is a question to a human — Resolve is where the answer goes
+    const resolve = u.state === "BLOCKED" ? el("button", { class: "icon-btn", type: "button", "aria-expanded": "false",
+      title: "Answer this blocker and reopen the unit", onclick: (e) => toggleResolve(e, u) }, "Resolve") : null;
+    kids.push(el("div", { class: "ctl" }, chip(u.state), sel, resolve, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
       if (!confirm(`Delete “${u.name}” from the queue?`)) return;
       S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
     }) }, "Delete")));
@@ -835,6 +853,39 @@ function unitRow(u, editable, cls = "") {
     });
   }
   return el("div", props, ...kids);
+}
+/* Answering a BLOCKED unit without hand-editing the plan: the panel quotes the blocker, takes the
+   human's answer, and reopens the unit as TODO with `reason → answer` on the line — the coder's
+   documented contract for "a TODO with a note". */
+function toggleResolve(e, u) {
+  const btn = e.currentTarget, row = btn.closest(".unit");
+  let panel = row.nextElementSibling;
+  if (panel?.classList.contains("unblock-reveal")) {   // open already: ease it shut
+    btn.setAttribute("aria-expanded", "false");
+    panel.classList.remove("on");
+    setTimeout(() => panel.remove(), 280);
+    return;
+  }
+  const text = el("textarea", { rows: "2", spellcheck: "false",
+    placeholder: "Your answer — the decision, value or step that was missing",
+    "aria-label": "Answer for the coder: " + u.name });
+  panel = el("div", { class: "reveal unblock-reveal" }, el("div", { class: "unblock" },
+    u.note ? el("p", { class: "blocked-note" }, "Blocked for: ", el("b", {}, u.note)) : null,
+    text,
+    el("div", { class: "row" },
+      el("button", { class: "btn small primary", type: "button", onclick: guard(async () => {
+        const answer = text.value.split(/\s+/).join(" ").trim().replaceAll("-->", "→");
+        S = await api("unit", { repo, name: u.name, state: "TODO",
+          note: answer ? (u.note ? `${u.note} → ${answer}` : `— ${answer}`) : "" });  // "" keeps the reason
+        renderState(false);  // the plan file already changed; this is what moves the tile
+        toast(answer ? `“${u.name}” reopened with your answer` : `“${u.name}” reopened`);
+      }) }, "Reopen as TODO"),
+      el("span", { class: "unblock-hint" }, "the answer lands on the unit's line; the coder reads it on its next pass"))));
+  row.after(panel);
+  btn.setAttribute("aria-expanded", "true");
+  void panel.offsetHeight;   // render once collapsed so the ease to open actually plays
+  panel.classList.add("on");
+  text.focus();
 }
 function renderUnits() {
   const units = S.units;
