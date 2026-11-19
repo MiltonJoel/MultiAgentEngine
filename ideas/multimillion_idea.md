@@ -58,8 +58,8 @@ Paying restaurants at year end, and the ARR they produce (restaurants × $149 ×
 | 4 | 3,500 | $6,258,000 |
 | 5 | 6,000 | $10,728,000 |
 
-Year 1 is a hand-sold pilot on one POS. Going from 3,500 to 6,000 means winning ~4,100 new
-restaurants in year 4–5 (about 1,000 are lost to churn each year), which needs a sales team and
+Year 1 is a hand-sold pilot on one POS. Going from 3,500 to 6,000 means winning ~3,900 new
+restaurants in year 5 (about 1,400 are lost to churn that year at 2.5%/month), which needs a sales team and
 a listing in each POS app marketplace — that is the funding ask.
 
 Realistic outcome: **$2.7M ARR in year 3, $10.7M ARR in year 5** — millions, but over five years, not one.

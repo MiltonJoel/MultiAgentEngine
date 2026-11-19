@@ -44,3 +44,15 @@ def test_arr_table_matches_price_and_reaches_millions_gradually():
         assert a == c * price * 12
     assert customers == sorted(customers)
     assert arr[0] < 1_000_000 <= arr[-1]  # not millions on day one
+
+
+def test_growth_sentence_accounts_for_churn():
+    churn = _assumption("Monthly churn") / 100
+    m = re.search(
+        r"from ([\d,]+) to ([\d,]+) means winning ~([\d,]+) new\s+restaurants.*?about ([\d,]+) are lost to churn",
+        TEXT,
+        re.DOTALL,
+    )
+    start, end, new, lost = (_num(g) for g in m.groups())
+    assert abs(lost - (start + end) / 2 * churn * 12) <= 0.15 * lost
+    assert abs(new - (end - start + lost)) <= 0.15 * new
