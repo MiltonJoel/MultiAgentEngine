@@ -98,7 +98,7 @@ main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
 .edge { stroke: var(--line2); stroke-width: 1; fill: none; }
 .edge.hot { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 4; animation: flow .8s linear infinite; }
 @keyframes flow { to { stroke-dashoffset: -8; } }
-.elabel { fill: var(--muted); font: 400 10px var(--mono); }
+.elabel { fill: var(--muted); font: 400 9px var(--mono); }
 /* stats: one ruled strip, no tiles */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .stat { padding: 6px 10px; min-width: 0; }
@@ -303,6 +303,24 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .board .col:first-child { border-left: 0; padding-left: 0; }
 .board .col h3 { margin-bottom: 4px; }
 .board .unit .ctl { margin-left: auto; justify-content: flex-end; }
+/* state changes: drag the tile on a fine pointer, pick from the select on touch */
+@media (pointer: fine) {
+  .unit.edit .ctl select { display: none; }   /* the chip is the readout; the mouse does the rest */
+  .unit.edit { cursor: grab; }
+  .unit.edit:active { cursor: grabbing; }
+}
+@media (pointer: coarse) { .unit.edit .ctl .chip { display: none; } }
+.unit.dragging { opacity: .5; }
+.col.over { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.col.over > h3 { color: var(--accent); }
+/* the lifted tile: fixed, moved by one translate3d per pointermove — compositor only, never layout */
+.unit.ghost { position: fixed; left: 0; top: 0; margin: 0; pointer-events: none; z-index: 60; opacity: .96;
+  border-color: var(--line2); box-shadow: 0 12px 28px rgba(28, 27, 24, .22); will-change: transform;
+  animation: none !important; transition: none !important; }
+html.grabbing, html.grabbing * { cursor: grabbing !important; user-select: none !important; }
+/* a unit the pointer/keyboard just placed: no re-fly, just a quick tint that fades */
+@keyframes place { from { background: color-mix(in srgb, var(--accent) 18%, var(--panel2)); } to { background: var(--panel2); } }
+.unit.placed { animation: place .3s ease-out; }
 @media (max-width: 1100px) { .board .col:nth-child(odd) { border-left: 0; padding-left: 0; } .board .col:nth-child(n+3) { padding-top: 18px; } }
 @media (max-width: 560px) { .board { gap: 0; } .board .col { border-left: 0; padding: 14px 0 0; } }
 .docs { grid-template-columns: 3fr 2fr; column-gap: 32px; row-gap: 40px; }
@@ -400,7 +418,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
             <path class="edge" id="e-tc" d="M140 126 V146 H48 V128" marker-end="url(#arr)"/>
             <path class="edge" id="e-ac" d="M286 126 V170 H16 V128" marker-end="url(#arr)"/>
             <text class="elabel bad" x="166" y="60">red</text>
-            <text class="elabel" x="41" y="18" text-anchor="middle">fixes</text>
+            <text class="elabel" x="38" y="18" text-anchor="middle">fixes</text>
             <text class="elabel" x="212" y="96" text-anchor="middle"><tspan class="good">green</tspan> +</text>
             <text class="elabel" x="212" y="118" text-anchor="middle">queue closed</text>
             <text class="elabel" x="338" y="96" text-anchor="middle">clean</text>
@@ -500,7 +518,8 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
         <div class="json-err" id="configErr" role="alert" hidden></div>
       </div>
     </div>
-    <p class="tip"><kbd>Ctrl</kbd>+<kbd>S</kbd> saves the focused editor.</p>
+    <p class="tip"><kbd>Ctrl</kbd>+<kbd>S</kbd> saves unsaved edits — the editor you are in, or all of them at once. Change a state by dragging the unit to another column
+      (or <kbd>←</kbd>/<kbd>→</kbd> on a focused unit; on touch, pick from the list).</p>
   </section>
 
   <section class="view" id="history" role="tabpanel" aria-labelledby="tab-history">
@@ -661,7 +680,13 @@ function renderAgents() {
     const r = S && S.runners[$("r-" + role).value], box = $("m-" + role);
     box.hidden = !r || r.model == null;
     box.placeholder = r && r.model ? r.model : "model";
-    $("a-" + role).textContent = agentOf(role);
+    const agent = agentOf(role), g = $("n-" + role);
+    // the node box fits a runner name; a runner:model string would write over the box edge.
+    // Full binding (model included) rides in the node's <title> tooltip instead.
+    $("a-" + role).textContent = agent.split(":")[0];
+    let tip = g.querySelector("title");
+    if (!tip) { tip = document.createElementNS("http://www.w3.org/2000/svg", "title"); g.prepend(tip); }
+    tip.textContent = `${role}: ${agent}`;
     const st = $("rs-" + role);
     if (st) {
       st.className = "rstat " + (!r ? "" : r.ready ? "ok" : "no");
@@ -726,29 +751,93 @@ function renderLaunchWarnings() {
 /* ---------- units ---------- */
 const STATE_LABEL = { TODO: "To do", IN_PROGRESS: "In progress", DONE: "Done", BLOCKED: "Blocked" };  // display only; the API keeps the real states
 const chip = (s) => el("span", { class: "chip s-" + s }, STATE_LABEL[s]);
-function unitRow(u, editable, moved = false) {
+/* dragging: the native HTML5 ghost trails behind the cursor; this one tracks the pointer 1:1.
+   One fixed-position clone, moved with a single translate3d (compositor-only), columns hit-tested
+   against rects cached at lift time — no layout, no DOM queries per move. */
+let drag = null, PLACED = new Set();  // PLACED: units the pointer/keyboard just moved; they settle fast, no re-fly
+function abortDrag() {
+  const d = drag; if (!d) return; drag = null;
+  d.ghost?.remove(); d.tile?.classList.remove("dragging"); d.over?.classList.remove("over");
+  document.documentElement.classList.remove("grabbing");
+}
+addEventListener("pointermove", (e) => {
+  if (!drag || e.pointerType !== "mouse") return;
+  if (!drag.ghost) {
+    if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 5) return;  // a click, not a drag
+    const r = drag.tile.getBoundingClientRect();
+    drag.ghost = drag.tile.cloneNode(true);
+    drag.ghost.classList.remove("moved", "placed");  // a running keyframe would override the drag transform and park the ghost in the corner
+    drag.ghost.classList.add("ghost");
+    drag.ghost.style.width = r.width + "px";
+    drag.off = [r.left - drag.x0, r.top - drag.y0];
+    document.body.append(drag.ghost);
+    document.documentElement.classList.add("grabbing");
+    drag.tile.classList.add("dragging");
+    getSelection().removeAllRanges();
+    drag.cols = [...document.querySelectorAll("#board .col")].map((el) => {
+      const c = el.getBoundingClientRect();
+      return { el, x: c.left, y: c.top, w: c.width, h: c.height };
+    });
+  }
+  drag.ghost.style.transform = `translate3d(${e.clientX + drag.off[0]}px, ${e.clientY + drag.off[1]}px, 0)`;
+  const x = e.clientX, y = e.clientY;
+  const col = drag.cols.find((c) => x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h)?.el || null;
+  if (col !== drag.over) { drag.over?.classList.remove("over"); col?.classList.add("over"); drag.over = col; }
+});
+addEventListener("pointerup", () => {
+  const d = drag; if (!d) return;
+  abortDrag();
+  const target = d.over?.dataset.state;
+  if (!d.ghost || !target || target === d.u.state) return;
+  guard(async () => {
+    PLACED.add(d.u.name);
+    S = await api("unit", { repo, name: d.u.name, state: target }); renderState(false);
+  })();
+});
+addEventListener("pointercancel", abortDrag);
+addEventListener("keydown", (e) => { if (e.key === "Escape" && drag) abortDrag(); });
+function unitRow(u, editable, cls = "") {
   const kids = [el("div", { class: "name" }, el("div", { title: u.name }, u.name), u.note ? el("div", { class: "note", title: u.note }, u.note) : null)];
   if (editable) {
     const sel = el("select", { "aria-label": "State of " + u.name, onchange: guard(async () => {
       S = await api("unit", { repo, name: u.name, state: sel.value }); renderState(false);
     }) }, ...STATES.map((s) => el("option", { value: s }, STATE_LABEL[s])));
     sel.value = u.state;
-    kids.push(el("div", { class: "ctl" }, sel, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
+    kids.push(el("div", { class: "ctl" }, chip(u.state), sel, el("button", { class: "icon-btn danger", type: "button", title: "Delete unit", "aria-label": "Delete unit " + u.name, onclick: guard(async () => {
       if (!confirm(`Delete “${u.name}” from the queue?`)) return;
       S = await api("unit", { repo, name: u.name, state: null }); renderState(false);
     }) }, "Delete")));
   } else kids.push(chip(u.state));
-  return el("div", { class: "unit" + (editable ? " edit" : "") + (moved ? " moved" : ""), "data-state": u.state }, ...kids);
+  const props = { class: "unit" + (editable ? " edit" : "") + (cls ? " " + cls : ""), "data-state": u.state };
+  if (editable) {
+    // mouse: drag the tile to another column; keyboard: ←/→; touch: the select in the tile
+    Object.assign(props, {
+      tabindex: "0", title: "Drag to another column — or focus and use ←/→",
+      onpointerdown: (e) => {
+        if (e.button !== 0 || e.pointerType !== "mouse" || e.target.closest("select, button, input, a")) return;
+        drag = { u, tile: e.currentTarget, x0: e.clientX, y0: e.clientY, ghost: null, over: null, off: [0, 0], cols: [] };
+      },
+      onkeydown: guard(async (e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        const i = STATES.indexOf(u.state), next = STATES[Math.max(0, Math.min(STATES.length - 1, i + (e.key === "ArrowRight" ? 1 : -1)))];
+        if (next !== u.state) { PLACED.add(u.name); S = await api("unit", { repo, name: u.name, state: next }); renderState(false); }
+      }),
+    });
+  }
+  return el("div", props, ...kids);
 }
 function renderUnits() {
   const units = S.units;
   $("miniUnits").replaceChildren(...(units.length ? units.map((u) => unitRow(u, false))
     : [el("div", { class: "empty" }, S.docs.plan === null ? "No plan yet." : "Empty. The coder fills it on the first pass.")]));
+  if (drag && !drag.tile.isConnected) abortDrag();  // a re-render under our feet: stop dragging, don't drop blindly
   const changed = new Set(boardSeen ? units.filter((u) => boardSeen.get(u.name) !== u.state).map((u) => u.name) : []);
+  const placed = PLACED; PLACED = new Set();  // a move the user just made lands fast; engine moves keep the slow settle
   $("board").replaceChildren(...STATES.map((s) => {
     const mine = units.filter((u) => u.state === s);
-    return el("div", { class: "col" }, el("h3", {}, chip(s), el("span", { style: "color:var(--muted)" }, mine.length)),
-      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true, changed.has(u.name))) : [el("div", { class: "col-empty" }, "None")])));
+    return el("div", { class: "col", "data-state": s }, el("h3", {}, chip(s), el("span", { style: "color:var(--muted)" }, mine.length)),
+      el("div", { class: "units" }, ...(mine.length ? mine.map((u) => unitRow(u, true, changed.has(u.name) ? "moved" : placed.has(u.name) ? "placed" : "")) : [el("div", { class: "col-empty" }, "None")])));
   }));
   boardSeen = new Map(units.map((u) => [u.name, u.state]));
   $("unparsed").replaceChildren(...S.unparsed.map((l) => el("div", { class: "warn err" },
@@ -797,7 +886,6 @@ for (const k of EDITORS) {
     ed.dataset.dirty = "1"; syncDirty();
     if (k === "config") { clearTimeout(configCheck); configCheck = setTimeout(showConfigError, 400); }
   });
-  ed.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(k); } });
 }
 const save = guard(async (which) => {
   if (which === "config") { clearTimeout(configCheck); if (showConfigError()) { $("ed-config").focus(); return; } }
@@ -808,6 +896,15 @@ window.addEventListener("beforeunload", (e) => {
   if (EDITORS.some((k) => $("ed-" + k).dataset.dirty)) { e.preventDefault(); e.returnValue = ""; }
 });
 document.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => save(b.dataset.save)));
+// Ctrl+S anywhere: save the focused editor, or every unsaved one — the browser's save-page dialog never opens
+addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || (e.key !== "s" && e.key !== "S")) return;
+  e.preventDefault();
+  const ed = document.activeElement, k = ed && ed.id && ed.id.startsWith("ed-") ? ed.id.slice(3) : "";
+  if (EDITORS.includes(k)) return void save(k);
+  const dirty = EDITORS.filter((x) => $("ed-" + x).dataset.dirty);
+  dirty.length ? dirty.forEach((x) => save(x)) : toast("Nothing unsaved");
+});
 
 /* ---------- run control ---------- */
 $("startBtn").addEventListener("click", guard(async () => {

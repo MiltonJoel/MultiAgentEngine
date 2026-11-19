@@ -465,8 +465,9 @@ Cada hallazgo indica su unidad, y **el motor la reabre**: la línea pasa a
 auditoría se repite** hasta salir limpia. Solo una auditoría sin hallazgos termina la
 ejecución. Las unidades `BLOCKED` no se reabren.
 
-Los diffs enviados al revisor y al auditor se limitan a 20 000 caracteres, con `--stat`
-primero.
+Los diffs que se envían al revisor y al auditor van completos si son cortos (menos de 2000
+caracteres); si son largos, solo el `--stat` y los agentes de solo lectura abren los
+archivos cambiados ellos mismos.
 
 ---
 

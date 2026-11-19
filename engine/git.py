@@ -5,7 +5,11 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-MAX_DIFF_CHARS = 20000
+# Below this a diff rides whole in the reviewer/auditor prompt; above it they get the stat and read the
+# changed files themselves — every runner can, and a long diff is ~5k tokens they would mostly skip.
+FULL_DIFF_CHARS = 2000
+STAT_FALLBACK = ("The full diff is long, so it is not included. Read the changed files listed above"
+                 " directly — you have the repository.")
 # A git call that waits on a gpg pinentry, a credential prompt or a slow hook must not hang the run.
 TIMEOUT = 300
 # Never committed by a checkpoint, even when the target repo's .gitignore forgets them.
@@ -89,13 +93,14 @@ def checkpoint(repo: str, message: str, strict: bool = False) -> str | None:
 
 
 def diff(repo: str, ref: str = "HEAD~1") -> str:
-    """Stat plus body since `ref`, truncated head-first so it can't flood a prompt."""
+    """Stat plus body since `ref`. A short diff goes in whole; a long one sends only the stat and
+    lets the read-only agent open the files itself — cheaper than flooding every audit round."""
     code, out = _git(repo, "diff", "--stat", ref)
     if code:
         return ""
     body = _git(repo, "diff", ref)[1]
-    if len(body) > MAX_DIFF_CHARS:
-        body = body[:MAX_DIFF_CHARS] + f"\n[... diff truncated at {MAX_DIFF_CHARS} chars ...]"
+    if len(body) > FULL_DIFF_CHARS:
+        return f"{out}\n\n{STAT_FALLBACK}".strip()
     return f"{out}\n\n{body}".strip()
 
 

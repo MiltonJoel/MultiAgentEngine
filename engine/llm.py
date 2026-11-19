@@ -30,6 +30,12 @@ ENV = {"ollama": {"url": "MAE_OLLAMA_URL", "model": "MAE_OLLAMA_MODEL"},
 
 MAX_STEPS = 200  # model turns per call; a coder pass that needs more is stuck
 MAX_OUTPUT = 10000  # chars of one tool result kept in the conversation
+# Tool results go stale fast: keep the newest whole and decay the rest, so every model turn
+# re-prefills less. The MAX_CONTEXT_CHARS wall below stays as the final backstop.
+FRESH_RESULTS = 2    # newest tool results keep their full (clipped) text
+RECENT_RESULTS = 4  # after those: head+tail shrunk to RECENT_CHARS
+RECENT_CHARS = 1000
+STALE_CHARS = 200  # older than that: a stub that keeps the tail
 # Older tool results are shortened once the conversation passes this, so a small local context never overflows.
 MAX_CONTEXT_CHARS = 60000
 COMMAND_TIMEOUT = 900
@@ -238,15 +244,30 @@ def _clip(text: str) -> str:
     return f"{text[:half]}\n… ({len(text) - MAX_OUTPUT} chars cut) …\n{text[-half:]}"
 
 
+def _shrink(text: str, cap: int) -> str:
+    """Head+tail slice with a stable marker; re-running it with the same cap is a no-op,
+    so per-turn trimming never eats into content it already decided to keep."""
+    if len(text) <= cap:
+        return text
+    return f"{text[:cap * 3 // 4]}\n[…older tool output, shrunk to {cap} chars…]\n{text[-cap // 4:]}"
+
+
 def _trim(messages: list[dict]) -> None:
-    """Shorten the oldest tool results until the conversation fits; the prompt and recent results stay intact."""
+    """Age the tool results: the newest stay whole, older ones decay tier by tier, so each model
+    turn re-prefills less. The prompt and recent results stay intact; MAX_CONTEXT_CHARS stays
+    as the final backstop."""
+    tools = [m for m in messages if m.get("role") == "tool"]
+    for age, message in enumerate(reversed(tools)):  # age 0 = newest
+        if age >= FRESH_RESULTS:
+            message["content"] = _shrink(message["content"] or "",
+                                         RECENT_CHARS if age < FRESH_RESULTS + RECENT_RESULTS else STALE_CHARS)
     total = sum(len(m.get("content") or "") for m in messages)
     for message in messages:
         if total <= MAX_CONTEXT_CHARS:
             return
         content = message.get("content") or ""
-        if message.get("role") == "tool" and len(content) > 200:
-            message["content"] = content[:200] + "\n(older output trimmed to save context)"
+        if message.get("role") == "tool" and len(content) > STALE_CHARS:
+            message["content"] = _shrink(content, STALE_CHARS)
             total -= len(content) - len(message["content"])
 
 

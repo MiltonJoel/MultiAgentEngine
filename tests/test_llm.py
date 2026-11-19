@@ -1,6 +1,7 @@
 """The free-model runners, against a scripted OpenAI-compatible server standing in for Ollama."""
 import argparse
 import json
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,7 +86,7 @@ def test_coder_edits_files_and_runs_tests(ollama):
         fake = ollama([
             {"content": "", "tool_calls": [call("write_file", path="app.py", content="def add(a, b):\n    return a + b\n")]},
             {"content": "", "tool_calls": [call("replace_in_file", path=str(plan), old="TODO", new="DONE"),
-                                           call("run_command", command="python -c 'import app; print(app.add(2, 3))'")]},
+                                           call("run_command", command=f'"{sys.executable}" -c \'import app; print(app.add(2, 3))\'')]},
             {"content": "Implemented add() and verified it."},
         ])
         out = run_agent("ollama", "implement add", cwd=repo, label="coder", write=True, add_dirs=[plans])
@@ -174,3 +175,18 @@ def test_free_flag_and_model_bindings(ollama):
     for bad in ("codex:gpt", "ollama:a b", "nope"):
         with pytest.raises(ValueError):
             run_args({"agents": {"coder": bad}})
+
+
+def test_tool_results_decay_with_age_so_each_turn_re_prefills_less():
+    long = "x" * 5000
+    messages = [{"role": "user", "content": "prompt"},
+                *[{"role": "tool", "tool_call_id": str(i), "content": long} for i in range(8)]]
+    llm._trim(messages)
+    sizes = [len(m["content"]) for m in messages if m["role"] == "tool"]  # oldest first
+    assert sizes[-2:] == [5000, 5000]              # the newest two stay whole
+    assert all(950 < s < 1100 for s in sizes[2:6])  # the next four decay to ~RECENT_CHARS
+    assert all(0 < s < 300 for s in sizes[:2])      # the oldest stub out at ~STALE_CHARS
+    assert messages[0]["content"] == "prompt"        # the prompt never decays
+    snapshot = [m["content"] for m in messages]
+    llm._trim(messages)                             # trimming again loses nothing more
+    assert [m["content"] for m in messages] == snapshot

@@ -15,7 +15,8 @@ The change that produced them — what the coder did in the pass that just faile
 
 {diff}
 
-Read the diff first: a failure that appeared this pass almost always lives in it.
+Read what changed first — the full diff, or its stat when the diff is long (open the listed
+files yourself): a failure that appeared this pass almost always lives in it.
 Then read whatever else the errors point at, and diagnose the root cause of each.
 Merge errors that share one root cause into a single problem. For each problem:
 - description: why it actually fails, not a restatement of the error text.
