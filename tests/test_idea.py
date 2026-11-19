@@ -1,5 +1,6 @@
 """The multimillion idea lives in ideas/, is iterated, and its numbers are realistic and consistent."""
 
+import itertools
 import re
 from pathlib import Path
 
@@ -56,3 +57,25 @@ def test_growth_sentence_accounts_for_churn():
     start, end, new, lost = (_num(g) for g in m.groups())
     assert abs(lost - (start + end) / 2 * churn * 12) <= 0.15 * lost
     assert abs(new - (end - start + lost)) <= 0.15 * new
+
+
+def test_cash_table_follows_from_customers_and_assumptions():
+    price, margin = _assumption("Price"), _assumption("Gross margin") / 100
+    churn, cac = _assumption("Monthly churn") / 100, _assumption("CAC")
+    ends = [0] + [_num(c) for c in re.findall(r"^\| \d+ \| ([\d,]+) \| \$[\d,]+ \|$", TEXT, re.MULTILINE)]
+    rows = re.findall(
+        r"^\| \d+ \| ([\d,]+) \| (\$[\d,]+) \| (\$[\d,]+) \| (\$[\d,]+) \| (-?\$[\d,]+) \|$",
+        TEXT,
+        re.MULTILINE,
+    )
+    assert len(rows) == len(ends) - 1
+    total = 0
+    for (start, end), row in zip(itertools.pairwise(ends), rows):
+        new, spend, gross, overhead, cash = (_num(x) for x in row)
+        avg = (start + end) / 2
+        assert new == end - start + avg * churn * 12
+        assert spend == new * cac
+        assert abs(gross - avg * price * margin * 12) < 1
+        assert abs(cash - (gross - spend - overhead)) < 1
+        total += cash
+    assert f"${-total:,.0f}" in TEXT  # stated cumulative burn matches the table

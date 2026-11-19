@@ -64,6 +64,35 @@ a listing in each POS app marketplace — that is the funding ask.
 
 Realistic outcome: **$2.7M ARR in year 3, $10.7M ARR in year 5** — millions, but over five years, not one.
 
+## Iteration 6 — what it costs to get there
+
+Iteration 5 shows revenue but not how much cash it takes. Every new restaurant costs the CAC up front,
+and the team costs money whether or not anyone signs up.
+
+Assumed team and overhead per year (salaries, POS integrations, support, office):
+$400,000 → $900,000 → $1,800,000 → $3,000,000 → $4,500,000.
+
+Per year: restaurants lost = average restaurants × 2.5% × 12; new restaurants = growth + lost;
+sales spend = new × CAC; gross profit = average restaurants × $149 × 80% × 12.
+
+| Year | New restaurants | Sales spend | Gross profit | Team & overhead | Cash flow |
+|------|-----------------|-------------|--------------|-----------------|-----------|
+| 1 | 69 | $82,800 | $42,912 | $400,000 | -$439,888 |
+| 2 | 409 | $490,800 | $328,992 | $900,000 | -$1,061,808 |
+| 3 | 1,385 | $1,662,000 | $1,358,880 | $1,800,000 | -$2,103,120 |
+| 4 | 2,750 | $3,300,000 | $3,576,000 | $3,000,000 | -$2,724,000 |
+| 5 | 3,925 | $4,710,000 | $6,794,400 | $4,500,000 | -$2,415,600 |
+
+Cumulative cash burned over five years: **$8,744,416**. The business is still losing money in year 5,
+because sales spend grows as fast as revenue.
+
+What this means:
+- This is a venture-funded plan: about $9M across a seed round (years 1–2, ~$1.5M) and a Series A.
+- Without investors, grow only as fast as gross profit pays for new customers, which means staying near
+  1,500 restaurants (~$2.7M ARR). That is still a good business, just not a $10M one.
+- The investor question is whether CAC falls as POS marketplace listings bring in restaurants without a demo.
+  If year-5 CAC drops to $600, sales spend falls by $2,355,000 and year 5 is roughly break-even.
+
 ## Kill criteria
 - Pilot (10 restaurants, 8 weeks) cuts food waste by less than 15% in kg → stop.
 - Fewer than 3 of 10 pilot restaurants agree to pay $149/month afterwards → rethink price or customer.
