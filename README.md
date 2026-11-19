@@ -327,7 +327,7 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--plan FILE` | cola de trabajo (por defecto `<repo>/.mae/plan.md`) |
 | `--allow-dir DIR` | directorio extra que el coder puede leer; repetible |
 | `--gate CMD` | comando de validación tras cada pasada del coder; repetible, reemplaza la lista del config; `--gate ''` desactiva todos los gates |
-| `--agent ROLE=RUNNER` | asigna un rol a `claude`, `codex`, `ollama` o `api`, p. ej. `--agent reviewer=claude`; `ollama` y `api` aceptan modelo: `--agent coder=ollama:qwen2.5-coder:14b`; repetible |
+| `--agent ROLE=RUNNER` | asigna un rol a `claude`, `codex`, `ollama` o `api`, p. ej. `--agent reviewer=claude`; cada runner acepta un mando tras `:` — modelo para `claude`/`ollama`/`api` (`--agent coder=ollama:qwen2.5-coder:14b`, `--agent coder=claude:opus`) y esfuerzo o modelo para `codex` (`--agent reviewer=codex:high`); repetible |
 | `--free` | todos los roles con el modelo local gratuito de Ollama; `--agent` y `"agents"` siguen cambiando roles sueltos |
 | `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
 | `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |

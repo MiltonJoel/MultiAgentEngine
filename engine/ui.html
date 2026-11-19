@@ -458,9 +458,9 @@ html.grabbing, html.grabbing * { cursor: grabbing !important; user-select: none 
         <div class="card" id="launchCard">
           <h2>Start a run</h2>
           <div class="roles">
-            <div><label for="r-coder">Coder</label><select id="r-coder"></select><div class="rstat" id="rs-coder"></div><input type="text" class="model" id="m-coder" aria-label="Coder model" spellcheck="false"></div>
-            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><div class="rstat" id="rs-reviewer"></div><input type="text" class="model" id="m-reviewer" aria-label="Reviewer model" spellcheck="false"></div>
-            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><div class="rstat" id="rs-auditor"></div><input type="text" class="model" id="m-auditor" aria-label="Auditor model" spellcheck="false"></div>
+            <div><label for="r-coder">Coder</label><select id="r-coder"></select><div class="rstat" id="rs-coder"></div><input type="text" class="model" id="m-coder" list="m-dl-coder" aria-label="Coder model or effort" spellcheck="false"><datalist id="m-dl-coder"></datalist></div>
+            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><div class="rstat" id="rs-reviewer"></div><input type="text" class="model" id="m-reviewer" list="m-dl-reviewer" aria-label="Reviewer model or effort" spellcheck="false"><datalist id="m-dl-reviewer"></datalist></div>
+            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><div class="rstat" id="rs-auditor"></div><input type="text" class="model" id="m-auditor" list="m-dl-auditor" aria-label="Auditor model or effort" spellcheck="false"><datalist id="m-dl-auditor"></datalist></div>
           </div>
           <button class="btn small" id="freeBtn" title="Local model via Ollama: no subscription, no API key">Use Ollama for all three</button>
           <details>
@@ -692,13 +692,14 @@ const RUNNER_LABEL = { claude: "claude", codex: "codex", ollama: "ollama (free, 
 // "ollama" or "ollama:<model>"; the model box only shows for runners that call a model over HTTP
 function agentOf(role) {
   const name = $("r-" + role).value, model = $("m-" + role).value.trim();
-  return S && S.runners[name] && S.runners[name].model != null && model ? `${name}:${model}` : name;
+  return S && S.runners[name] && S.runners[name].knob && model ? `${name}:${model}` : name;
 }
 function renderAgents() {
   for (const role of ROLES) {
     const r = S && S.runners[$("r-" + role).value], box = $("m-" + role);
-    box.hidden = !r || r.model == null;
-    box.placeholder = r && r.model ? r.model : "model";
+    box.hidden = !r || !r.knob;   // every runner has a knob now: claude model, codex effort or model, ollama/api model
+    box.placeholder = r && r.model ? r.model : (r && r.options ? r.options.join(" · ") : "model");
+    $("m-dl-" + role).replaceChildren(...((r && r.options) || []).map((o) => el("option", { value: o })));
     const agent = agentOf(role), g = $("n-" + role);
     // the node box fits a runner name; a runner:model string would write over the box edge.
     // Full binding (model included) rides in the node's <title> tooltip instead.

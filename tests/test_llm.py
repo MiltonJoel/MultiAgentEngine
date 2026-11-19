@@ -162,19 +162,31 @@ def test_preflight_explains_what_is_missing(ollama, monkeypatch):
         llm.configure({"ollama": {"modle": "x"}})
 
 
-def test_free_flag_and_model_bindings(ollama):
+def test_free_flag_and_model_bindings(ollama, monkeypatch):
     ollama([])
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")  # the CLI knobs must not depend on the machine
     parser = argparse.ArgumentParser()
     assert _agents(parser, {}, [], free=True) == FREE_AGENTS
     bound = _agents(parser, {}, ["coder=ollama:qwen2.5-coder:7b"], free=True)
     assert bound["coder"] == "ollama:qwen2.5-coder:7b"
-    with pytest.raises(SystemExit):  # the CLIs take no model
-        _agents(parser, {}, ["coder=claude:opus"], free=True)
+    assert _agents(parser, {}, ["coder=claude:opus"], free=True)["coder"] == "claude:opus"  # the CLIs take a knob too
+    assert _agents(parser, {}, ["auditor=codex:high"], free=True)["auditor"] == "codex:high"
+    with pytest.raises(SystemExit):  # a knob with spaces is neither a model nor an effort
+        _agents(parser, {}, ["coder=claude:o pus"], free=True)
     assert run_args({"agents": {"coder": "ollama:qwen2.5-coder:14b", "reviewer": "ollama"}}) == [
         "--agent", "coder=ollama:qwen2.5-coder:14b", "--agent", "reviewer=ollama"]
-    for bad in ("codex:gpt", "ollama:a b", "nope"):
+    assert run_args({"agents": {"reviewer": "codex:high"}}) == ["--agent", "reviewer=codex:high"]
+    for bad in ("claude:o pus", "ollama:a b", "nope"):
         with pytest.raises(ValueError):
             run_args({"agents": {"coder": bad}})
+
+
+def test_the_cli_knobs_map_to_flags():
+    """`claude:opus` -> --model; `codex:high` -> reasoning effort; any other codex knob -> --model."""
+    from engine.cli import _claude_model_flags, _codex_model_flags
+    assert _claude_model_flags("opus") == ["--model", "opus"]
+    assert _codex_model_flags("high") == ["-c", "model_reasoning_effort=high"]
+    assert _codex_model_flags("gpt-5.1") == ["-m", "gpt-5.1"]
 
 
 def test_tool_results_decay_with_age_so_each_turn_re_prefills_less():

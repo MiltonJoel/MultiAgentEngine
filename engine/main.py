@@ -94,8 +94,9 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str], fre
             parser.error(f"unknown role {role!r} — known: {', '.join(DEFAULT_AGENTS)}")
         if cli not in RUNNERS:
             parser.error(f"unknown CLI {cli!r} for {role} — known: {', '.join(sorted(RUNNERS))}")
-        if model and cli not in MODEL_RUNNERS:
-            parser.error(f"{agent!r} for {role}: only {', '.join(MODEL_RUNNERS)} take a model")
+        if model and (not model.strip() or any(c.isspace() for c in model)):
+            parser.error(f"{agent!r} for {role}: the model or effort after ':' must be one word — "
+                         "a claude model, a codex effort or model, an ollama/api model")
     for agent in sorted(set(agents.values())):
         cli, model = split_agent(agent)
         if cli in MODEL_RUNNERS:

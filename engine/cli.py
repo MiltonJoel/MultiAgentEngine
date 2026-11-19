@@ -198,9 +198,11 @@ def _claude_usage(lines: list[str]) -> dict:
 
 
 def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 600,
-               add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+               add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
+    if model:
+        cmd += _claude_model_flags(model)
     if write:  # headless acceptEdits refuses Bash, so the coder could never run the tests DONE requires
         cmd += ["--allowedTools", "Bash"]
     for directory in add_dirs or []:
@@ -224,13 +226,15 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
 
 
 def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1200,
-              add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+              add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     if add_dirs:
         print(f"[{label}] codex has no --add-dir: {', '.join(add_dirs)} will not be readable", flush=True)
     fd, last_message = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
     cmd = ["codex", "exec", "-C", cwd, "-s", "workspace-write" if write else "read-only",
            "--skip-git-repo-check", "-o", last_message]
+    if model:
+        cmd += _codex_model_flags(model)
     schema_file = None
     if schema:
         fd, schema_file = tempfile.mkstemp(suffix=".json")
@@ -250,10 +254,25 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
             os.unlink(schema_file)
 
 
-# Which runner plays which role is configuration; every runner takes the same arguments.
+# Which runner plays which role is configuration; every runner takes the same arguments, `model`
+# included — for the HTTP runners it picks the endpoint model, for the CLIs it maps to a flag.
 RUNNERS = {"claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api}
 # Runners that call a model over HTTP instead of a CLI; they take an optional model: "ollama:qwen2.5-coder:14b".
 MODEL_RUNNERS = ("ollama", "api")
+# The CLI knobs after ":" — codex's is a reasoning effort (low/medium/high) or a model name,
+# claude's is a model; the UI turns these into pickers.
+CODEX_EFFORTS = ("low", "medium", "high")
+CLAUDE_MODELS = ("sonnet", "opus", "haiku")
+
+
+def _claude_model_flags(model: str) -> list[str]:
+    return ["--model", model]
+
+
+def _codex_model_flags(knob: str) -> list[str]:
+    """`codex:high` -> reasoning effort; anything else is a --model name."""
+    return ["-c", f"model_reasoning_effort={knob}"] if knob in CODEX_EFFORTS else ["-m", knob]
+
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
 FREE_AGENTS = dict.fromkeys(DEFAULT_AGENTS, "ollama")  # `mae --free`: no subscription, no key
 

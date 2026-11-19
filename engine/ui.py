@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from engine import git, llm
-from engine.cli import DEFAULT_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
+from engine.cli import CLAUDE_MODELS, CODEX_EFFORTS, DEFAULT_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
 from engine.graph import MAX_ITERATIONS, STATUS_BLOCK, STATUS_LINE, plan_unparsed
 from engine.main import CONFIG, DEFAULT_PLAN, DEFAULT_SPEC, MAE_DIR, NEW_PLAN
 from engine.nodes.tester import DEFAULT_GATES
@@ -172,10 +172,12 @@ def runners(repo: Path) -> dict:
     for name in RUNNERS:
         if name in MODEL_RUNNERS:
             why = broken or llm.check(name, timeout=1)
-            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"]}
+            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"], "knob": "model"}
         else:
             found = shutil.which(name)
-            out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH", "model": None}
+            out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH",
+                         "model": None, "knob": "model" if name == "claude" else "effort or model",
+                         "options": list(CLAUDE_MODELS if name == "claude" else CODEX_EFFORTS)}
     return out
 
 
@@ -237,8 +239,7 @@ def run_args(body: dict) -> list[str]:
     args = []
     for role, agent in (body.get("agents") or {}).items():
         cli, model = split_agent(str(agent))
-        if role not in DEFAULT_AGENTS or cli not in RUNNERS or (model and cli not in MODEL_RUNNERS) \
-                or any(c.isspace() for c in model):
+        if role not in DEFAULT_AGENTS or cli not in RUNNERS or any(c.isspace() for c in model):
             raise ValueError(f"bad agent binding {role}={agent}")
         args += ["--agent", f"{role}={cli}:{model}" if model else f"{role}={cli}"]
     gates = body.get("gates")
