@@ -41,7 +41,8 @@ header {
   display: flex; align-items: center; gap: 14px; padding: 12px 20px;
   border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
 }
-.brand { display: flex; align-items: center; gap: 10px; font: 400 18px/1.2 var(--serif); letter-spacing: 0; white-space: nowrap; }
+.brand { display: flex; align-items: center; gap: 10px; font: 400 18px/1.2 var(--serif); letter-spacing: 0; white-space: nowrap; border: 0; background: none; padding: 0; cursor: pointer; }
+.brand:hover { color: var(--accent); }
 .repo { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .repo input { flex: 1; min-width: 0; }
 input[type=text], input[type=number], select, textarea {
@@ -189,6 +190,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .ev .d { color: var(--muted); word-break: break-word; }
 .commit { font: 12px/1.5 var(--mono); display: flex; gap: 10px; padding: 6px 0 6px 10px; border-radius: 0; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; }
 .commit:hover { border-left-color: var(--line2); }
+.commit.on { border-left-color: var(--accent); }   /* the commit whose diff is open; click it again to close */
 .commit .t { color: var(--faint); font-size: 12px; }
 .commit .sha { color: var(--accent); font: 400 12px var(--mono); }
 .commit .stat { all: unset; color: var(--faint); font: 12px var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
@@ -198,6 +200,11 @@ pre.diff .a { background: color-mix(in srgb, var(--con-ink) 10%, transparent); c
 pre.diff .r { background: color-mix(in srgb, var(--error) 18%, transparent); color: color-mix(in srgb, var(--error), white 30%); }
 pre.diff .h { color: var(--con-dim); }
 pre.diff .f { color: var(--con-ink); font-weight: 700; margin-top: 8px; }
+/* a commit's diff eases open and closed instead of snapping in and out */
+.reveal { display: grid; grid-template-rows: 0fr; margin-top: 12px; transition: grid-template-rows .25s cubic-bezier(.2, .7, .3, 1); }
+.reveal > pre.diff { margin: 0; overflow: hidden; min-height: 0; opacity: 0; transition: opacity .25s ease; }
+.reveal.on { grid-template-rows: 1fr; }
+.reveal.on > pre.diff { overflow: auto; opacity: 1; }
 
 .toast { position: fixed; bottom: 18px; right: 18px; background: var(--bg); border: 1px solid var(--ink); padding: 10px 14px;
   border-radius: var(--r); max-width: 440px; transform: translateY(120px); opacity: 0; transition: transform .2s, opacity .2s; z-index: 50; }
@@ -369,9 +376,7 @@ html.grabbing, html.grabbing * { cursor: grabbing !important; user-select: none 
 </head>
 <body>
 <header>
-  <div class="brand">
-    MultiAgentEngine
-  </div>
+  <button type="button" class="brand" id="brandBtn" title="Back to the run view">MultiAgentEngine</button>
   <form class="repo" id="repoForm">
     <input type="text" id="repo" class="mono" placeholder="/path/to/the/repo/you/want/built" list="recent" autocomplete="off" aria-label="Target repository">
     <datalist id="recent"></datalist>
@@ -583,6 +588,7 @@ const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toas
 /* ---------- tabs ---------- */
 function show(view) {
   const target = !S ? "welcome" : view === "welcome" ? "mission" : view;
+  const was = document.querySelector(".view.on")?.id;
   const tabs = document.querySelector("nav.tabs");
   tabs.hidden = target === "welcome";                 // no repo open: tabs are meaningless
   document.querySelectorAll("nav.tabs button").forEach((b) => {
@@ -592,6 +598,8 @@ function show(view) {
     b.tabIndex = on ? 0 : -1;                          // roving tabindex: Tab enters the active tab only
   });
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === target));
+  if (was !== target)  // a new view is a new page: arrive at its top, not wherever the old one was scrolled to
+    scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   if (target === "welcome") { renderWelcome(); return; }
   store.set("view", target);
   if (target === "history") loadRuns();
@@ -614,6 +622,7 @@ document.querySelectorAll("nav.tabs button").forEach((b) => {
     show(next.dataset.view); next.focus();
   });
 });
+$("brandBtn").addEventListener("click", () => show("mission"));
 document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => show(b.dataset.goto)));
 
 /* ---------- repo + state ---------- */
@@ -1044,7 +1053,12 @@ async function loadRuns() {
   if (!runs.length) return box.replaceChildren();
   box.replaceChildren(...runs.map((r) => {
     const b = r.status === "clean" ? "clean" : r.status === "needs review" ? "review" : r.status === "aborted" ? "aborted" : r.status.startsWith("finished") ? "finished" : "running";
-    return el("button", { class: "runitem", onclick: (e) => { document.querySelectorAll(".runitem").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); guard(showRun)(r); } },
+    return el("button", { class: "runitem", onclick: (e) => {
+      if (e.currentTarget.classList.contains("on")) return;  // already shown: re-clicking must not blank the panel
+      document.querySelectorAll(".runitem").forEach((x) => x.classList.remove("on"));
+      e.currentTarget.classList.add("on");
+      guard(showRun)(r);
+    } },
       el("div", { class: "top" }, el("span", { class: "mono" }, r.name), el("span", { class: "badge b-" + b }, r.status)),
       el("div", { class: "meta" }, `${r.iterations} pass(es) · $${r.cost_usd.toFixed(2)}` + (r.focus?.length ? ` · ${r.focus.join(", ")}` : "")));
   }));
@@ -1079,11 +1093,26 @@ async function showRun(r) {
         if (parts.length === 3) { cur = { sha: parts[0], time: parts[1], msg: parts[2], stat: "" }; rows.push(cur); }
         else if (cur && line.trim()) cur.stat = line.trim().replace(/ files? changed/, "f").replace(/ insertions?\(\+\)/, "+").replace(/ deletions?\(-\)/, "−");
       }
-      commits.replaceChildren(...(rows.length ? rows.map((c) => el("button", { class: "commit", onclick: guard(async () => {
+      let open = null;  // sha whose diff is shown; clicking that commit again closes it
+      commits.replaceChildren(...(rows.length ? rows.map((c) => el("button", { class: "commit", onclick: guard(async (e) => {
+        const btn = e.currentTarget;
+        if (open === c.sha) {  // same commit: ease it shut, then drop it from the DOM once it has collapsed
+          open = null; btn.classList.remove("on");
+          const reveal = diffBox.querySelector(".reveal");
+          if (reveal) { reveal.classList.remove("on"); setTimeout(() => { if (open == null) diffBox.replaceChildren(); }, 280); }
+          return;
+        }
+        open = c.sha;
+        commits.querySelectorAll(".commit.on").forEach((x) => x.classList.remove("on"));
+        btn.classList.add("on");
         diffBox.replaceChildren(el("div", { class: "run-loading", role: "status" }, "Loading…"));
-        const { diff } = await api("show?" + q({ repo, sha: c.sha })).catch((e) => (diffBox.replaceChildren(), Promise.reject(e)));
-        diffBox.replaceChildren(el("pre", { class: "diff" }, ...diff.split("\n").map((l) =>
+        const { diff } = await api("show?" + q({ repo, sha: c.sha })).catch((err) => (diffBox.replaceChildren(), Promise.reject(err)));
+        if (open !== c.sha) return;  // closed or switched while loading — don't resurrect it
+        const reveal = el("div", { class: "reveal" }, el("pre", { class: "diff" }, ...diff.split("\n").map((l) =>
           el("span", { class: l.startsWith("diff --git") ? "f" : l.startsWith("@@") ? "h" : l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "r" : "" }, l || " "))));
+        diffBox.replaceChildren(reveal);
+        void reveal.offsetHeight;  // render once collapsed, so the ease to open actually plays
+        reveal.classList.add("on");
       }) }, el("span", { class: "sha" }, c.sha), el("span", { class: "t mono" }, c.time), el("span", {}, c.msg), el("span", { class: "stat" }, c.stat)))
         : [el("div", { class: "empty" }, "No commits on this branch.")]));
     }).catch((e) => commits.replaceChildren(el("div", { class: "empty" }, e.message)));
