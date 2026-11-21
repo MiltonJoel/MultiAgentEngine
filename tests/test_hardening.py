@@ -227,6 +227,22 @@ def test_a_truncated_findings_object_is_never_a_clean_audit():
         assert problems and problems[0]["description"].startswith("unreadable reply"), reply
 
 
+def test_findings_written_as_prose_beside_an_empty_list_are_not_a_clean_audit():
+    prose = ("I reviewed db.py carefully.\n\nCRITICAL: db.py line 42 builds the SQL query with f-string "
+             "interpolation of `user_id` — a textbook SQL injection. An attacker can read or modify any row.\n\n"
+             'Final answer:\n{"problems": []}')
+    assert _parse_problems(prose)[0]["description"].startswith("unreadable reply")
+    for clean in ('{"problems": []}', '```json\n{"problems": []}\n```',
+                  'Reviewed every unit against the spec; nothing found.\n{"problems": []}'):
+        assert _parse_problems(clean) == [], clean  # a short note is fine; an essay is not
+
+
+def test_a_reply_nested_past_the_decoders_depth_fails_closed_instead_of_crashing():
+    deep = '{"problems": [], "a": ' + '{"a": ' * 5000 + "1" + "}" * 5000 + "}"
+    assert _parse_problems(deep)[0]["description"].startswith("unreadable reply")
+    assert _parse_problems("[" * 50000)[0]["description"].startswith("unreadable reply")
+
+
 def test_findings_nested_under_another_key_still_count():
     reply = json.dumps({"problems": [], "notes": {"problems": [{"description": "hidden"}]}})
     assert [p["description"] for p in _parse_problems(reply)] == ["hidden"]

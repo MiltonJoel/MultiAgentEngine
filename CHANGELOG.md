@@ -29,8 +29,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 - An auditor reply that quoted an empty `{"problems": []}` example before its real findings was read as
-  a clean audit. All `problems` objects in a reply are now merged (nested ones included); a malformed or
-  truncated one fails closed.
+  a clean audit. All `problems` objects in a reply are now merged (nested ones included); a malformed,
+  truncated or decoder-exhausting (deeply nested) one fails closed, and an empty list surrounded by more
+  than a short note of prose is not accepted as clean (findings written as prose would otherwise vanish).
 - Ctrl-C or `SIGTERM` during a checkpoint SIGKILLed git mid-write and left `.git/index.lock`, so every later
   run was refused. Signals now wait for the checkpoint to finish (recorded by a temporary handler, not a
   blocked signal mask, so a hung git hook can still be interrupted).

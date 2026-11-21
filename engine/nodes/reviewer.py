@@ -31,6 +31,9 @@ SCHEMA = {
 }
 # The start of a findings object; one that then fails to decode (cut off mid-reply) must not be skipped.
 PROBLEMS_START = re.compile(r'\{\s*"problems"\s*:')
+# A clean audit may come with a short note ("Reviewed all units; nothing found."), not with an essay: findings
+# described in prose beside an empty list must not pass as clean. Counted without whitespace or fences.
+MAX_CLEAN_PROSE = 120
 NO_DIFF = "(not available — the repository is not under git, or nothing was committed)"
 
 
@@ -63,9 +66,33 @@ def _nested_problems(value) -> list[dict] | None:
 def _parse_problems(raw: str) -> list[dict]:
     """Every `{"problems": [...]}` object in a possibly fenced or chatty reply, merged. Fails closed: a reply
     that quotes an empty example before its real findings still reports the findings, and anything unreadable —
-    prose, `{"problems": null}`, a list of strings — becomes one problem: a reply we can't read is never clean."""
+    prose, `{"problems": null}`, a list of strings, nesting deep enough to exhaust the decoder — becomes one
+    problem: a reply we can't read is never clean. An empty list wrapped in more than a short note of prose
+    isn't clean either: findings written as prose next to `{"problems": []}` would otherwise vanish."""
+    try:
+        found, spans = _decode_problems(raw)
+    except _Unreadable:
+        found, spans = None, []
+    except RecursionError:  # a hostile reply nested past the decoder's depth: a reply we cannot read
+        found, spans = None, []
+    if found == [] and len(_prose_outside(raw, spans)) > MAX_CLEAN_PROSE:
+        found = None
+    if found is not None:
+        return found
+    text = raw.strip()[:800] or "the agent returned an empty reply"
+    return [{"unit": "", "file": "", "line": 0, "description": f"unreadable reply: {text}", "suggested_fix": ""}]
+
+
+class _Unreadable(Exception):
+    pass
+
+
+def _decode_problems(raw: str) -> tuple[list[dict] | None, list[tuple[int, int]]]:
+    """(merged findings, the (start, end) spans they came from); findings None if no findings object was found."""
     decoder = json.JSONDecoder()
-    found, readable, position = [], False, 0
+    found: list[dict] = []
+    spans: list[tuple[int, int]] = []
+    position = 0
     for start in (m.start() for m in re.finditer(r"\{", raw)):
         if start < position:  # inside an object already decoded
             continue
@@ -73,25 +100,30 @@ def _parse_problems(raw: str) -> list[dict]:
             payload, end = decoder.raw_decode(raw, start)
         except ValueError:
             if PROBLEMS_START.match(raw, start):  # a findings object cut off or malformed: never skip it
-                readable = False
-                break
+                raise _Unreadable from None
             continue
         if not (isinstance(payload, dict) and "problems" in payload):
             continue
         problems = payload["problems"]
         if not (isinstance(problems, list) and all(isinstance(item, dict) for item in problems)):
-            readable = False
-            break
+            raise _Unreadable
         nested = _nested_problems({k: v for k, v in payload.items() if k != "problems"})
         if nested is None:
-            readable = False
-            break
-        readable, position = True, end
+            raise _Unreadable
+        position = end
+        spans.append((start, end))
         found += [p for p in map(_problem, problems + nested) if p not in found]
-    if readable:
-        return found
-    text = raw.strip()[:800] or "the agent returned an empty reply"
-    return [{"unit": "", "file": "", "line": 0, "description": f"unreadable reply: {text}", "suggested_fix": ""}]
+    return (found if spans else None), spans
+
+
+def _prose_outside(raw: str, spans: list[tuple[int, int]]) -> str:
+    """The reply minus its findings objects, code fences and whitespace."""
+    kept, last = [], 0
+    for start, end in spans:
+        kept.append(raw[last:start])
+        last = end
+    kept.append(raw[last:])
+    return re.sub(r"```(?:json)?|\s+", "", "".join(kept))
 
 
 def _diff(state: GraphState, ref: str | None) -> str:
