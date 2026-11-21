@@ -13,10 +13,11 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
-from engine import git, llm
-from engine.cli import DEFAULT_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
+from engine import __version__, git, llm
+from engine.cli import CLAUDE_MODELS, CODEX_EFFORTS, DEFAULT_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
 from engine.graph import MAX_ITERATIONS, STATUS_BLOCK, STATUS_LINE, plan_unparsed
 from engine.main import CONFIG, DEFAULT_PLAN, DEFAULT_SPEC, MAE_DIR, NEW_PLAN
 from engine.nodes.tester import DEFAULT_GATES
@@ -26,6 +27,17 @@ STATES = ("TODO", "IN_PROGRESS", "DONE", "BLOCKED")
 MAX_LINES = 20000  # ponytail: in-memory console buffer; older lines drop, the JSONL log keeps the record
 NEW_SPEC = "# Spec\nDescribe what the system must be: requirements, interfaces, invariants.\n"
 SHA = re.compile(r"^[0-9a-f]{4,40}$")
+MAX_BODY = 4 * 1024 * 1024  # a spec or plan is text; anything bigger is a mistake or an attack
+REQUEST_TIMEOUT = 30  # seconds a client may take to send its request before the handler thread gives up
+LOOPBACK = ("127.0.0.1", "localhost")
+# The page is self-contained: inline script and style, same-origin fetches, nothing else.
+PAGE_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                               "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+                               "frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",  # the page URL carries the token
+}
 
 
 class Run:
@@ -57,7 +69,7 @@ class Run:
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
     def _pump(self, proc: subprocess.Popen) -> None:
-        for line in proc.stdout:
+        for line in proc.stdout or ():
             with self.lock:
                 self.lines.append(line.rstrip("\n"))
                 if len(self.lines) > MAX_LINES:
@@ -68,21 +80,36 @@ class Run:
             if proc is self.proc:
                 self.lines.append(f"[ui] engine exited with code {proc.returncode}")
 
+    def _live(self) -> subprocess.Popen | None:
+        """The running process, captured under the lock so a stop can never signal a run started after it."""
+        with self.lock:
+            proc = self.proc  # read once: the process checked is the process returned
+            return proc if proc is not None and proc.poll() is None else None
+
     def stop(self) -> bool:
         """SIGINT, like Ctrl-C: the engine kills its agent, logs `aborted` and keeps its checkpoints."""
-        if not self.running():
+        proc = self._live()
+        if proc is None:
             return False
         # the engine alone, not its process group: a git commit or gate caught mid-write by the signal
         # would leave index.lock behind; the engine stops its own children on KeyboardInterrupt
-        os.kill(self.proc.pid, signal.SIGINT)
+        try:
+            proc.send_signal(signal.SIGINT)
+        except OSError:  # it exited in between
+            return False
         return True
 
+    def wait(self, timeout: float) -> None:
+        if self.proc is not None:
+            self.proc.wait(timeout=timeout)
+
     def kill(self) -> None:
-        if self.running():
+        proc = self._live()
+        if proc is not None:
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session: its group id is its pid
             except OSError:
-                self.proc.kill()
+                proc.kill()
 
     def output(self, since: int) -> dict:
         with self.lock:
@@ -110,7 +137,7 @@ def _config(repo: Path) -> dict:
         return {}
     config = json.loads(path.read_text(encoding="utf8"))
     if not isinstance(config, dict):
-        raise ValueError(f"{path} must hold a JSON object")  # noqa: TRY004 — the API maps ValueError to a 400
+        raise ValueError(f"{path} must hold a JSON object")  # the API maps ValueError to a 400
     return config
 
 
@@ -151,7 +178,8 @@ def edit_unit(text: str, name: str, state: str | None, note: str = "") -> str:
             if state is None:
                 continue
             old_note = m.group("note").strip()
-            line = f"{name}: {state}" + (f" {note or old_note}" if (note or old_note) else "")
+            lines.append(f"{name}: {state}" + (f" {note or old_note}" if (note or old_note) else ""))
+            continue
         lines.append(line)
     if not found and state is not None:
         # insert before the trailing blank line that precedes "-->"
@@ -171,17 +199,21 @@ def runners(repo: Path) -> dict:
     out = {}
     for name in RUNNERS:
         if name in MODEL_RUNNERS:
-            why = broken or llm.check(name, timeout=1)
-            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"]}
+            why = broken or llm.check(name, timeout=1, send_key=False)
+            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"], "knob": "model",
+                         "options": llm.models(name, timeout=2)}
         else:
             found = shutil.which(name)
-            out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH", "model": None}
+            out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH",
+                         "model": None, "knob": "model" if name == "claude" else "effort or model",
+                         "options": list(CLAUDE_MODELS if name == "claude" else CODEX_EFFORTS)}
     return out
 
 
 def state(repo: Path) -> dict:
     docs = _docs(repo)
-    read = {k: p.read_text(encoding="utf8") if p.is_file() else None for k, p in docs.items()}
+    read: dict[str, str | None] = {k: p.read_text(encoding="utf8", errors="replace") if p.is_file() else None
+                                   for k, p in docs.items()}
     is_repo = git.is_repo(str(repo))
     return {
         "repo": str(repo),
@@ -201,7 +233,7 @@ def runs(repo: Path) -> list[dict]:
     """One summary per JSONL run log, newest first."""
     out = []
     for path in sorted((repo / MAE_DIR / "runs").glob("*.jsonl"), reverse=True):
-        summary = {"name": path.stem, "status": "running or killed", "iterations": 0, "cost_usd": 0.0}
+        summary: dict[str, Any] = {"name": path.stem, "status": "running or killed", "iterations": 0, "cost_usd": 0.0}
         for event in _events(path):
             kind = event.get("event")
             if kind == "start":
@@ -237,8 +269,7 @@ def run_args(body: dict) -> list[str]:
     args = []
     for role, agent in (body.get("agents") or {}).items():
         cli, model = split_agent(str(agent))
-        if role not in DEFAULT_AGENTS or cli not in RUNNERS or (model and cli not in MODEL_RUNNERS) \
-                or any(c.isspace() for c in model):
+        if role not in DEFAULT_AGENTS or cli not in RUNNERS or any(c.isspace() for c in model):
             raise ValueError(f"bad agent binding {role}={agent}")
         args += ["--agent", f"{role}={cli}:{model}" if model else f"{role}={cli}"]
     gates = body.get("gates")
@@ -261,42 +292,70 @@ def run_args(body: dict) -> list[str]:
 class Handler(BaseHTTPRequestHandler):
     token = ""
     server_version = "mae-ui"
+    timeout = REQUEST_TIMEOUT  # StreamRequestHandler: a client that stalls mid-request frees its thread
 
-    def log_message(self, fmt, *args):  # keep the token-bearing URLs out of the terminal
+    def log_message(self, format, *args):  # keep the token-bearing URLs out of the terminal
         pass
 
-    def _send(self, code: int, payload, content_type="application/json"):
+    def _send(self, code: int, payload, content_type="application/json", headers: dict | None = None):
         body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
     def _authorized(self) -> bool:
-        return secrets.compare_digest(self.headers.get("X-MAE-Token", ""), self.token)
+        return secrets.compare_digest(self.headers.get("X-MAE-Token", "").encode(), self.token.encode())
+
+    def _same_host(self) -> bool:
+        """DNS rebinding guard: a page on evil.example rebound to 127.0.0.1 still sends Host: evil.example.
+        Host must name this loopback server, and a browser's Origin, when sent, must be that same server."""
+        port = cast(ThreadingHTTPServer, self.server).server_port
+        allowed = {f"{host}:{port}" for host in LOOPBACK}
+        if port == 80:  # browsers leave the default port out of Host and Origin
+            allowed |= set(LOOPBACK)
+        if self.headers.get("Host", "") not in allowed:
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin in {f"http://{host}" for host in allowed}
+
+    def _body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("bad Content-Length") from None
+        if length < 0 or length > MAX_BODY:
+            raise ValueError(f"the request body must be between 0 and {MAX_BODY} bytes")
+        body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        if not isinstance(body, dict):
+            raise ValueError("the request body must be a JSON object")
+        return body
 
     def _dispatch(self, method: str):
         url = urlparse(self.path)
+        if not self._same_host():
+            return self._send(403, {"error": "this server only answers on 127.0.0.1 — open the URL `mae-ui` printed"})
         if method == "GET" and url.path in ("/", "/index.html"):
-            return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8", PAGE_HEADERS)
         if not url.path.startswith("/api/"):
             return self._send(404, {"error": "not found"})
         if not self._authorized():
             return self._send(403, {"error": "missing or wrong token — open the URL `mae-ui` printed"})
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
         try:
-            body = {}
-            if method == "POST":
-                length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length) or b"{}") if length > 0 else {}
-                if not isinstance(body, dict):
-                    raise ValueError("the request body must be a JSON object")
+            body = self._body() if method == "POST" else {}
             return self._send(200, self._api(method, url.path[5:], query, body))
         except (ValueError, OSError) as exc:
+            if isinstance(exc, ValueError) and len(str(exc)) > 2000:
+                exc = ValueError(str(exc)[:2000] + " …")
             return self._send(400, {"error": str(exc)})
+        except Exception as exc:  # a bug must answer 500 with a reason, not drop the connection
+            return self._send(500, {"error": f"internal error: {type(exc).__name__}: {exc}"})
 
     def _api(self, method: str, route: str, query: dict, body: dict):
         if method == "GET" and route == "state":
@@ -305,6 +364,17 @@ class Handler(BaseHTTPRequestHandler):
             return RUN.output(int(query.get("since") or 0))
         if method == "GET" and route == "runs":
             return runs(_repo(query.get("repo")))
+        if method == "POST" and route == "runs/clear":
+            repo = _repo(body.get("repo"))
+            directory = repo / MAE_DIR / "runs"
+            if not directory.is_dir():
+                return {"deleted": 0, "runs": []}
+            # newest mtime first: a run in progress keeps appending to its log, so the newest one stays
+            logs = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            active = RUN.running() and RUN.repo == str(repo)
+            for path in (logs[1:] if active else logs):
+                path.unlink(missing_ok=True)
+            return {"deleted": len(logs) - bool(active), "runs": runs(repo)}
         if method == "GET" and route == "runlog":
             repo, name = _repo(query.get("repo")), query.get("name", "")
             path = repo / MAE_DIR / "runs" / f"{Path(name).name}.jsonl"
@@ -374,6 +444,7 @@ def serve(port: int, token: str) -> ThreadingHTTPServer:
 
 def main():
     parser = argparse.ArgumentParser(prog="mae-ui", description="Local dashboard for the MultiAgentEngine")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--repo", default=".", help="Repository to open first (default: .)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true", help="Print the URL instead of opening it")
@@ -395,7 +466,7 @@ def main():
     finally:
         if RUN.stop():
             try:
-                RUN.proc.wait(timeout=30)
+                RUN.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 print("engine did not stop within 30s — killing it", flush=True)
                 RUN.kill()

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -61,11 +62,16 @@ def _retry_delay(text: str, now: float | None = None) -> float:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process group — the CLIs spawn children that would keep editing the repo."""
+    """Kill the whole process group — the CLIs spawn children that would keep editing the repo.
+    start_new_session made the CLI a group leader, so its group id is its pid: signalling proc.pid directly
+    reaches the children without depending on the leader still existing (getpgid needs it alive or unreaped)."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        proc.kill()
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render) -> tuple[list[str], int]:
@@ -87,7 +93,9 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
     # started before the prompt is written, so a CLI that never reads stdin can't hang us
     timer = threading.Timer(timeout, on_timeout)
     timer.start()
-    lines = []
+    lines: list[str] = []
+    if proc.stdin is None or proc.stdout is None:  # both are PIPE; this only narrows the type
+        raise RuntimeError(f"{label}: no pipes to the CLI")
     try:
         try:
             proc.stdin.write(prompt)
@@ -103,6 +111,7 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
             if shown:
                 print(f"[{label}] {shown}", flush=True)
         proc.wait()
+        _kill_tree(proc)  # a child the CLI left behind would keep editing the repo after the pass ended
     except BaseException:  # Ctrl-C included
         _kill_tree(proc)
         raise
@@ -120,7 +129,7 @@ def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, r
     on_attempt(lines, seconds): called after every attempt, failed ones included, so their spend is logged."""
     for attempt in range(MAX_WAITS + 1):
         started = time.monotonic()
-        lines = []
+        lines: list[str] = []
         try:
             lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
         finally:
@@ -197,15 +206,17 @@ def _claude_usage(lines: list[str]) -> dict:
             "output_tokens": usage.get("output_tokens", 0)}
 
 
-def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 600,
-               add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+def run_claude(prompt: str, cwd: str, label: str, *, write: bool = False, timeout: float = 600,
+               add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
+    if model:
+        cmd += _claude_model_flags(model)
     if write:  # headless acceptEdits refuses Bash, so the coder could never run the tests DONE requires
         cmd += ["--allowedTools", "Bash"]
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
-    if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
+    if schema:  # claude has no --output-schema; the nodes parse a chatty reply and have it restated if ambiguous
         prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
 
     def failed(lines: list[str]) -> str:
@@ -223,14 +234,16 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
     return _claude_result(lines)
 
 
-def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1200,
-              add_dirs: list[str] | None = None, schema: dict | None = None) -> str:
+def run_codex(prompt: str, cwd: str, label: str, *, write: bool = False, timeout: float = 1200,
+              add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     if add_dirs:
         print(f"[{label}] codex has no --add-dir: {', '.join(add_dirs)} will not be readable", flush=True)
     fd, last_message = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
     cmd = ["codex", "exec", "-C", cwd, "-s", "workspace-write" if write else "read-only",
            "--skip-git-repo-check", "-o", last_message]
+    if model:
+        cmd += _codex_model_flags(model)
     schema_file = None
     if schema:
         fd, schema_file = tempfile.mkstemp(suffix=".json")
@@ -250,10 +263,27 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
             os.unlink(schema_file)
 
 
-# Which runner plays which role is configuration; every runner takes the same arguments.
-RUNNERS = {"claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api}
+# Which runner plays which role is configuration; every runner takes the same arguments, `model`
+# included — for the HTTP runners it picks the endpoint model, for the CLIs it maps to a flag.
+RUNNERS: dict[str, Callable[..., str]] = {
+    "claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api,
+}
 # Runners that call a model over HTTP instead of a CLI; they take an optional model: "ollama:qwen2.5-coder:14b".
 MODEL_RUNNERS = ("ollama", "api")
+# The CLI knobs after ":" — codex's is a reasoning effort (low/medium/high) or a model name,
+# claude's is a model; the UI turns these into pickers.
+CODEX_EFFORTS = ("low", "medium", "high")
+CLAUDE_MODELS = ("sonnet", "opus", "haiku")
+
+
+def _claude_model_flags(model: str) -> list[str]:
+    return ["--model", model]
+
+
+def _codex_model_flags(knob: str) -> list[str]:
+    """`codex:high` -> reasoning effort; anything else is a --model name."""
+    return ["-c", f"model_reasoning_effort={knob}"] if knob in CODEX_EFFORTS else ["-m", knob]
+
 DEFAULT_AGENTS = {"coder": "claude", "reviewer": "codex", "auditor": "codex"}
 FREE_AGENTS = dict.fromkeys(DEFAULT_AGENTS, "ollama")  # `mae --free`: no subscription, no key
 

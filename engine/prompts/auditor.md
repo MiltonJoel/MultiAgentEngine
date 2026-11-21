@@ -15,7 +15,8 @@ The work queue, with the agent's status block at the top:
 
 {focus}
 
-Everything this run changed, from its first pass to now:
+Everything this run changed, from its first pass to now (the stat when the diff is long —
+read the changed files yourself):
 
 {diff}
 

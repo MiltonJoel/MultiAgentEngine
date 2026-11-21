@@ -1,11 +1,19 @@
 """Checkpoints in the target repo: one branch per run, one commit per iteration.
 Everything degrades to a no-op when the target isn't a git repo."""
 import secrets
+import signal
 import subprocess
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-MAX_DIFF_CHARS = 20000
+# Below this a diff rides whole in the reviewer/auditor prompt; above it they get the stat and read the
+# changed files themselves — every runner can, and a long diff is ~5k tokens they would mostly skip.
+FULL_DIFF_CHARS = 2000
+STAT_FALLBACK = ("The full diff is long, so it is not included. Read the changed files listed above"
+                 " directly — you have the repository.")
 # A git call that waits on a gpg pinentry, a credential prompt or a slow hook must not hang the run.
 TIMEOUT = 300
 # Never committed by a checkpoint, even when the target repo's .gitignore forgets them.
@@ -56,32 +64,105 @@ def busy(repo: str) -> str | None:
         return None
     root = Path(git_dir)
     for marker, why in (("MERGE_HEAD", "a merge is in progress"), ("rebase-merge", "a rebase is in progress"),
-                        ("rebase-apply", "a rebase is in progress"), ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
+                        ("rebase-apply", "a rebase is in progress"),
+                        ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
                         ("index.lock", f"{root / 'index.lock'} exists (a git command crashed or is still running)")):
         if (root / marker).exists():
             return why
     return None
 
 
+@contextmanager
+def _signals_deferred():
+    """Hold SIGINT/SIGTERM until the checkpoint is done. Raised mid-`subprocess.run`, they make it SIGKILL the git
+    child mid-write, leaving .git/index.lock behind — and git.busy() then refuses every later run until a human
+    deletes it. The engine's handlers only record the signal meanwhile and it is re-raised afterwards.
+    Python-level handlers, not a blocked signal mask: a mask is inherited by git and its hooks, so a hook that
+    hangs could not be interrupted; handlers reset to the default in every program the engine starts."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    held = (signal.SIGINT, signal.SIGTERM)
+    caught: list[int] = []
+    previous: dict[signal.Signals, Any] = {
+        sig: signal.signal(sig, lambda signum, frame: caught.append(signum)) for sig in held}
+    try:
+        yield
+    except BaseException as failure:
+        _restore(previous)
+        if caught:  # the signal still wins (exit 130/143), but the checkpoint's own error stays attached as its cause
+            try:
+                signal.raise_signal(caught[0])
+            except BaseException as interrupt:
+                raise interrupt from failure
+        raise
+    _restore(previous)
+    if caught:  # the first signal decides; the run is aborting, so a second one would change nothing
+        signal.raise_signal(caught[0])
+
+
+def _restore(previous: dict) -> None:
+    """Put the handlers back with both signals blocked, so one arriving mid-restore can't strand a recording
+    handler; a signal held meanwhile is delivered to the real handler as soon as the block lifts."""
+    mask = getattr(signal, "pthread_sigmask", None)
+    blocked = mask(signal.SIG_BLOCK, set(previous)) if mask else None
+    try:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    finally:
+        if mask and blocked is not None:
+            mask(signal.SIG_SETMASK, blocked)
+
+
+IGNORED_WARNING = "The following paths are ignored by one of your .gitignore files:"
+
+
+def _only_ignored_warning(out: str) -> bool:
+    """git's "paths are ignored" notice, and nothing else that would mean a file was left unstaged."""
+    lines = [line for line in out.splitlines() if line.strip()]
+    if not lines or lines[0] != IGNORED_WARNING:
+        return False
+    return not any(line.startswith(("fatal:", "error:", "warning:")) for line in lines)
+
+
 def checkpoint(repo: str, message: str, strict: bool = False) -> str | None:
     """Commit everything except NEVER_COMMIT; None if there was nothing to commit.
-    strict: a failed commit raises CheckpointError instead of printing a warning."""
-    _git(repo, "add", "-A", "--", ".", *EXCLUDE)
+    strict: a failed commit raises CheckpointError instead of printing a warning.
+    Ctrl-C and SIGTERM wait until it is done (bounded by TIMEOUT per git call), so it never leaves index.lock."""
+    with _signals_deferred():
+        return _checkpoint(repo, message, strict)
+
+
+def _checkpoint(repo: str, message: str, strict: bool) -> str | None:
+
+    def failed(step: str, out: str, code: int) -> None:
+        reason = out.splitlines()[0] if out else f"exit {code}"
+        if strict:
+            raise CheckpointError(f"[git] checkpoint {step} failed: {reason} — fix it (git identity, hooks, "
+                                  "signing, permissions) or re-run with --no-git")
+        print(f"[git] {step} failed: {reason}", flush=True)
+
+    # a partial `add` would commit a tree the gates never ran on, and every later diff would lie
+    code, out = _git(repo, "-c", "advice.addIgnoredFile=false", "add", "-A", "--", ".", *EXCLUDE)
+    if code == 1 and _only_ignored_warning(out):
+        code = 0  # an exclude naming a gitignored path (.mae/runs/) makes git exit 1 after staging everything
+    if code:
+        failed("git add", out, code)
+        return None
     # `add` with excludes leaves alone what was already staged; unstage secrets explicitly
     secret_specs = [f":(glob){glob}" for glob in SECRET_GLOBS]
     if head(repo):  # back to the committed version: a tracked file keeps it, an untracked one leaves the index
-        _git(repo, "reset", "-q", "HEAD", "--", *secret_specs)
+        code, out = _git(repo, "reset", "-q", "HEAD", "--", *secret_specs)
     else:
-        _git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *secret_specs)
+        code, out = _git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *secret_specs)
+    if code:  # a secret could still be staged: never commit on top of that
+        failed("unstaging secrets", out, code)
+        return None
     code, out = _git(repo, "commit", "-m", message)
     if code:
         if "nothing to commit" in out or "nothing added to commit" in out or "no changes added" in out:
             return None
-        reason = out.splitlines()[0] if out else f"exit {code}"
-        if strict:
-            raise CheckpointError(f"[git] checkpoint commit failed: {reason} — fix it (git identity, hooks, "
-                                  "signing) or re-run with --no-git")
-        print(f"[git] commit failed: {reason}", flush=True)
+        failed("commit", out, code)
         return None
     sha = _git(repo, "rev-parse", "--short", "HEAD")[1]
     print(f"[git] {sha} {message}", flush=True)
@@ -89,13 +170,14 @@ def checkpoint(repo: str, message: str, strict: bool = False) -> str | None:
 
 
 def diff(repo: str, ref: str = "HEAD~1") -> str:
-    """Stat plus body since `ref`, truncated head-first so it can't flood a prompt."""
+    """Stat plus body since `ref`. A short diff goes in whole; a long one sends only the stat and
+    lets the read-only agent open the files itself — cheaper than flooding every audit round."""
     code, out = _git(repo, "diff", "--stat", ref)
     if code:
         return ""
     body = _git(repo, "diff", ref)[1]
-    if len(body) > MAX_DIFF_CHARS:
-        body = body[:MAX_DIFF_CHARS] + f"\n[... diff truncated at {MAX_DIFF_CHARS} chars ...]"
+    if len(body) > FULL_DIFF_CHARS:
+        return f"{out}\n\n{STAT_FALLBACK}".strip()
     return f"{out}\n\n{body}".strip()
 
 

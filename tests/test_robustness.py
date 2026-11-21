@@ -243,7 +243,7 @@ def _stub_run(tmp_path: Path, sed: str, gates: list[str]) -> subprocess.Complete
     (repo / ".mae" / "spec.md").write_text("spec")
     (repo / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: TODO\nPayments: TODO\n-->\n")
     stub = bin_dir / "claude"
-    stub.write_text(f"#!/bin/sh\ncat >/dev/null\nsed -i '{sed}' .mae/plan.md\n"
+    stub.write_text(f"#!/bin/sh\ncat >/dev/null\nsed -i.bak '{sed}' .mae/plan.md && rm -f .mae/plan.md.bak\n"
                     "echo '{\"type\":\"result\",\"result\":\"{\\\"problems\\\": []}\",\"total_cost_usd\":0.01}'\n")
     stub.chmod(0o755)
     _git_repo(str(repo))

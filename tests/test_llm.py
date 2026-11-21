@@ -1,6 +1,7 @@
 """The free-model runners, against a scripted OpenAI-compatible server standing in for Ollama."""
 import argparse
 import json
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,7 +86,7 @@ def test_coder_edits_files_and_runs_tests(ollama):
         fake = ollama([
             {"content": "", "tool_calls": [call("write_file", path="app.py", content="def add(a, b):\n    return a + b\n")]},
             {"content": "", "tool_calls": [call("replace_in_file", path=str(plan), old="TODO", new="DONE"),
-                                           call("run_command", command="python -c 'import app; print(app.add(2, 3))'")]},
+                                           call("run_command", command=f'"{sys.executable}" -c \'import app; print(app.add(2, 3))\'')]},
             {"content": "Implemented add() and verified it."},
         ])
         out = run_agent("ollama", "implement add", cwd=repo, label="coder", write=True, add_dirs=[plans])
@@ -138,14 +139,14 @@ def test_rate_limit_is_retried(ollama, monkeypatch):
 def test_api_runner_sends_the_key(monkeypatch):
     fake = FakeModel([{"content": "ok"}])
     try:
-        llm.configure({"api": {"url": fake.url, "model": "some/free-model:free", "key_env": "FREE_KEY"}})
-        monkeypatch.setenv("FREE_KEY", "sk-test")
+        llm.configure({"api": {"url": fake.url, "model": "some/free-model:free", "key_env": "MAE_FREE_KEY"}})
+        monkeypatch.setenv("MAE_FREE_KEY", "sk-test")
         assert llm.check("api") == ""
         with tempfile.TemporaryDirectory() as repo:
             assert run_agent("api", "p", cwd=repo, label="auditor") == "ok"
         assert fake.requests[0]["auth"] == "Bearer sk-test"
-        monkeypatch.delenv("FREE_KEY")
-        assert "FREE_KEY" in llm.check("api")
+        monkeypatch.delenv("MAE_FREE_KEY")
+        assert "MAE_FREE_KEY" in llm.check("api")
     finally:
         fake.close()
         llm.configure(None)
@@ -161,16 +162,49 @@ def test_preflight_explains_what_is_missing(ollama, monkeypatch):
         llm.configure({"ollama": {"modle": "x"}})
 
 
-def test_free_flag_and_model_bindings(ollama):
+def test_free_flag_and_model_bindings(ollama, monkeypatch):
     ollama([])
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")  # the CLI knobs must not depend on the machine
     parser = argparse.ArgumentParser()
     assert _agents(parser, {}, [], free=True) == FREE_AGENTS
     bound = _agents(parser, {}, ["coder=ollama:qwen2.5-coder:7b"], free=True)
     assert bound["coder"] == "ollama:qwen2.5-coder:7b"
-    with pytest.raises(SystemExit):  # the CLIs take no model
-        _agents(parser, {}, ["coder=claude:opus"], free=True)
+    assert _agents(parser, {}, ["coder=claude:opus"], free=True)["coder"] == "claude:opus"  # the CLIs take a knob too
+    assert _agents(parser, {}, ["auditor=codex:high"], free=True)["auditor"] == "codex:high"
+    with pytest.raises(SystemExit):  # a knob with spaces is neither a model nor an effort
+        _agents(parser, {}, ["coder=claude:o pus"], free=True)
     assert run_args({"agents": {"coder": "ollama:qwen2.5-coder:14b", "reviewer": "ollama"}}) == [
         "--agent", "coder=ollama:qwen2.5-coder:14b", "--agent", "reviewer=ollama"]
-    for bad in ("codex:gpt", "ollama:a b", "nope"):
+    assert run_args({"agents": {"reviewer": "codex:high"}}) == ["--agent", "reviewer=codex:high"]
+    for bad in ("claude:o pus", "ollama:a b", "nope"):
         with pytest.raises(ValueError):
             run_args({"agents": {"coder": bad}})
+
+
+def test_the_cli_knobs_map_to_flags():
+    """`claude:opus` -> --model; `codex:high` -> reasoning effort; any other codex knob -> --model."""
+    from engine.cli import _claude_model_flags, _codex_model_flags
+    assert _claude_model_flags("opus") == ["--model", "opus"]
+    assert _codex_model_flags("high") == ["-c", "model_reasoning_effort=high"]
+    assert _codex_model_flags("gpt-5.1") == ["-m", "gpt-5.1"]
+
+
+def test_the_model_list_comes_from_the_endpoint(ollama):
+    """The UI's ollama/api picker only offers models the endpoint actually lists."""
+    ollama([], models=("qwen2.5-coder:7b", "llama3.2:1b"))
+    assert llm.models("ollama") == ["llama3.2:1b", "qwen2.5-coder:7b"]
+
+
+def test_tool_results_decay_with_age_so_each_turn_re_prefills_less():
+    long = "x" * 5000
+    messages = [{"role": "user", "content": "prompt"},
+                *[{"role": "tool", "tool_call_id": str(i), "content": long} for i in range(8)]]
+    llm._trim(messages)
+    sizes = [len(m["content"]) for m in messages if m["role"] == "tool"]  # oldest first
+    assert sizes[-2:] == [5000, 5000]              # the newest two stay whole
+    assert all(950 < s < 1100 for s in sizes[2:6])  # the next four decay to ~RECENT_CHARS
+    assert all(0 < s < 300 for s in sizes[:2])      # the oldest stub out at ~STALE_CHARS
+    assert messages[0]["content"] == "prompt"        # the prompt never decays
+    snapshot = [m["content"] for m in messages]
+    llm._trim(messages)                             # trimming again loses nothing more
+    assert [m["content"] for m in messages] == snapshot

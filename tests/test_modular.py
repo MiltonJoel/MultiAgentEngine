@@ -116,7 +116,7 @@ def test_diff_reaches_the_reviewer_and_degrades_without_git():
         assert _diff(state, None) == NO_DIFF
 
 
-def test_long_diffs_are_truncated_before_they_reach_a_prompt():
+def test_long_diffs_become_stat_only_so_they_cannot_flood_a_prompt():
     with tempfile.TemporaryDirectory() as d:
         repo = Path(d)
         _init(repo)
@@ -125,8 +125,19 @@ def test_long_diffs_are_truncated_before_they_reach_a_prompt():
         (repo / "a.py").write_text("\n".join(f"line {i}" for i in range(5000)))
         git.checkpoint(str(repo), "big")
         body = git.diff(str(repo))
-        assert len(body) < git.MAX_DIFF_CHARS + 200
-        assert "truncated" in body
+        assert len(body) < git.FULL_DIFF_CHARS + 400  # the stat plus a pointer, not 5000 lines of diff
+        assert "a.py" in body and "not included" in body
+
+
+def test_short_diffs_still_ride_in_the_prompt_whole():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        _init(repo)
+        (repo / "a.py").write_text("x = 1\n")
+        git.checkpoint(str(repo), "base")
+        (repo / "a.py").write_text("x = 2\n")
+        git.checkpoint(str(repo), "next")
+        assert "-x = 1" in git.diff(str(repo)) and "+x = 2" in git.diff(str(repo))
 
 
 def test_documents_live_in_the_target_repo_not_in_the_package():

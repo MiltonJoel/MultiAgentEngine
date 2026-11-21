@@ -1,11 +1,32 @@
 """Append-only JSONL run log, one line per event (`tail -f` while running, `jq` after)."""
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 # ponytail: process-global sink — one run per process.
 _sink = None
 _totals: dict[str, float] = {}
+_secrets: set[str] = set()
+
+
+def secret(value: str) -> None:
+    """Register a value (an API key) that must never reach a run log, even inside an echoed error body."""
+    if value and len(value) >= 8:  # a short value would scrub ordinary words out of the log
+        _secrets.add(value)
+
+
+def _scrub(value):
+    """Secrets replaced in every string inside value — before JSON escaping, which would hide a key with " or \\."""
+    if isinstance(value, str):
+        for secret_value in _secrets:
+            value = value.replace(secret_value, "[redacted]")
+        return value
+    if isinstance(value, dict):
+        return {_scrub(k): _scrub(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_scrub(v) for v in value]
+    return value
 
 
 def start(log_dir: str | Path) -> Path:
@@ -15,20 +36,37 @@ def start(log_dir: str | Path) -> Path:
     ignore = directory / ".gitignore"
     if not ignore.exists():  # logs must never ride along in a checkpoint commit
         ignore.write_text("*\n", encoding="utf8")
-    path = directory / f"{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S')}.jsonl"
-    _sink = path.open("a", encoding="utf8", buffering=1)
-    return path
+    stamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    if _sink is not None:
+        _sink.close()
+    _totals.clear()
+    # exclusive create: runs started in the same second (other plans, other processes) never share one log
+    for suffix in ("", *(f"-{os.getpid()}-{n}" for n in range(1, 1000))):
+        path = directory / f"{stamp}{suffix}.jsonl"
+        try:
+            _sink = path.open("x", encoding="utf8", buffering=1)
+        except FileExistsError:
+            continue
+        return path
+    raise RuntimeError(f"cannot create a new run log in {directory}")
+
+
+def close() -> None:
+    global _sink
+    if _sink is not None:
+        _sink.close()
+        _sink = None
 
 
 def log(event: str, **fields) -> None:
     """Record one event. Numeric fields ending in _usd or _tokens accumulate into totals()."""
     for key, value in fields.items():
-        if isinstance(value, (int, float)) and key.endswith(("_usd", "_tokens")):
+        if isinstance(value, int | float) and key.endswith(("_usd", "_tokens")):
             _totals[key] = _totals.get(key, 0) + value
     if _sink is None:
         return
-    _sink.write(json.dumps({"ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                            "event": event, **fields}, ensure_ascii=False) + "\n")
+    record = {"ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"), "event": event, **fields}
+    _sink.write(json.dumps(_scrub(record) if _secrets else record, ensure_ascii=False) + "\n")
 
 
 def totals() -> dict:

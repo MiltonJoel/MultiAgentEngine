@@ -1,13 +1,20 @@
-"""CLI entrypoint: `mae` (or `python -m engine.main`)."""
+"""CLI entrypoint: `mae` (or `python -m engine`)."""
 import argparse
-import fcntl
 import json
+import os
 import shutil
+import signal
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
-from engine import git, llm, prompts, runlog
+try:
+    import fcntl
+except ImportError:  # Windows: the process-group and locking code below is POSIX-only
+    fcntl = None  # type: ignore[assignment]
+
+from engine import __version__, git, llm, prompts, runlog
 from engine.cli import DEFAULT_AGENTS, FREE_AGENTS, MODEL_RUNNERS, RUNNERS, split_agent
 from engine.graph import (
     IDLE_LIMIT,
@@ -29,6 +36,7 @@ DEFAULT_PLAN = "plan.md"
 # Exit codes, usable from CI. NEEDS_REVIEW: the queue closed green and audited, but a human still has to
 # look — some units are BLOCKED, or no gate ran so "green" checked nothing.
 EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW = 0, 1, 2
+EXIT_INTERRUPTED, EXIT_TERMINATED = 130, 143  # 128 + SIGINT / SIGTERM, as a shell reports them
 
 NEW_PLAN = """<!-- ENGINE-STATUS
 First unit: TODO
@@ -54,7 +62,8 @@ def _repo_config(repo: Path) -> dict:
         raise SystemExit(f"{path}: {exc}")
     if not isinstance(config, dict):
         raise SystemExit(f"{path}: must hold a JSON object")
-    for key, kind in (("agents", dict), ("llm", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str)):
+    kinds = (("agents", dict), ("llm", dict), ("allow_dirs", list), ("gates", list), ("spec", str), ("plan", str))
+    for key, kind in kinds:
         if key in config and not isinstance(config[key], kind):
             raise SystemExit(f"{path}: \"{key}\" must be a {kind.__name__}")
     if not all(isinstance(d, str) for d in config.get("allow_dirs", [])):
@@ -94,8 +103,9 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str], fre
             parser.error(f"unknown role {role!r} — known: {', '.join(DEFAULT_AGENTS)}")
         if cli not in RUNNERS:
             parser.error(f"unknown CLI {cli!r} for {role} — known: {', '.join(sorted(RUNNERS))}")
-        if model and cli not in MODEL_RUNNERS:
-            parser.error(f"{agent!r} for {role}: only {', '.join(MODEL_RUNNERS)} take a model")
+        if model and (not model.strip() or any(c.isspace() for c in model)):
+            parser.error(f"{agent!r} for {role}: the model or effort after ':' must be one word — "
+                         "a claude model, a codex effort or model, an ollama/api model")
     for agent in sorted(set(agents.values())):
         cli, model = split_agent(agent)
         if cli in MODEL_RUNNERS:
@@ -104,6 +114,15 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str], fre
         elif not shutil.which(cli):
             parser.error(f"the {cli} CLI is not on PATH — install and log in, bind its roles elsewhere "
                          f"with --agent ROLE=CLI, or use a free local model with --free")
+    for agent in sorted(set(agents.values())):
+        cli, model = split_agent(agent)
+        if cli in MODEL_RUNNERS and (s := llm.settings(cli, model))["key"]:  # say where the key goes, up front
+            host = urlparse(s["url"]).hostname
+            if s["user_url"]:
+                print(f"{cli}: sends ${s['key_env']} to {host}")
+            else:  # the repo's own config chose this endpoint — the case SECURITY.md warns about
+                print(f"WARNING: {cli}: sends ${s['key_env']} to {host}, an endpoint chosen by this repo's "
+                      ".mae/config.json — make sure you trust it")
     return agents
 
 
@@ -136,7 +155,11 @@ def _max_iterations(parser: argparse.ArgumentParser, flag: int | None, configure
 @contextmanager
 def _plan_lock(plan: Path):
     """One run per plan file; advisory, so a human editing it is unaffected."""
-    with plan.open("r+", encoding="utf8") as handle:
+    try:
+        handle = plan.open("r+", encoding="utf8")
+    except PermissionError:
+        raise SystemExit(f"{plan} is not writable — the engine records progress in the plan, so it needs write access")
+    with handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -144,8 +167,18 @@ def _plan_lock(plan: Path):
         yield
 
 
+class Terminated(KeyboardInterrupt):
+    """SIGTERM (systemd, docker stop, CI cancel), handled like Ctrl-C: the agent's process group is killed,
+    `aborted` is logged and the checkpoints stay. A bare SIGTERM would orphan the agent, still editing the repo."""
+
+
+def _on_sigterm(signum, frame):
+    raise Terminated()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mae", description="AI software engineering loop")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--spec", metavar="FILE",
                         help=f"Architecture doc, never edited by the engine (default: <repo>/{MAE_DIR}/{DEFAULT_SPEC})")
     parser.add_argument("--plan", metavar="FILE",
@@ -164,7 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Run every role on a free local model through Ollama ({llm.DEFAULT_MODEL}) — "
                              "no subscription or API key")
     parser.add_argument("--max-iterations", type=int, metavar="N",
-                        help=f"Ceiling on coder passes; must exceed the number of open units (default: {MAX_ITERATIONS})")
+                        help="Ceiling on coder passes; must exceed the number of open units "
+                             f"(default: {MAX_ITERATIONS})")
     parser.add_argument("--log-dir", metavar="DIR", help=f"JSONL run log directory (default: <repo>/{MAE_DIR}/runs)")
     parser.add_argument("--no-git", action="store_true",
                         help="Skip the per-run branch and per-iteration commits (no rollback points)")
@@ -174,6 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if fcntl is None or os.name != "posix":
+        raise SystemExit("mae runs on Linux and macOS only (it manages process groups and POSIX file locks) "
+                         "— on Windows, run it inside WSL")
 
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
@@ -211,11 +248,14 @@ def main():
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
 
+    signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         with _plan_lock(plan):
             code = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
+    except Terminated:
+        sys.exit(EXIT_TERMINATED)
     except KeyboardInterrupt:
-        sys.exit(130)
+        sys.exit(EXIT_INTERRUPTED)
     sys.exit(code)
 
 
@@ -226,7 +266,8 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     focus = plan_open(str(plan))
     print(f"Plan: {_tally(str(plan))}")
     # main() refuses a finished plan, so no open units here means no status block yet
-    print("This run: " + (", ".join(focus) if focus else "no task list yet — the coder writes it from the spec and plan"))
+    print("This run: " + (", ".join(focus) if focus
+                          else "no task list yet — the coder writes it from the spec and plan"))
     print(f"Log: {log_path}")
     print("Agents: " + ", ".join(f"{role}={cli}" for role, cli in agents.items()))
     print("Gates: " + (" ; ".join(" ".join(g["cmd"]) for g in gates) or "(none — nothing gates the coder)"))
@@ -271,7 +312,7 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     except BaseException as exc:
         runlog.log("aborted", error=f"{type(exc).__name__}: {exc}", usage=runlog.totals())
         print(f"\nAborted: {type(exc).__name__}: {exc}\nPlan: {_tally(str(plan))}\nUsage: {runlog.summary()}")
-        if isinstance(exc, (RuntimeError, TimeoutError)):  # an agent or a checkpoint failed: the message says it all
+        if isinstance(exc, RuntimeError | TimeoutError):  # an agent or a checkpoint failed: the message says it all
             raise SystemExit(EXIT_FAILED)
         raise
 

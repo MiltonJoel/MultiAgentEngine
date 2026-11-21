@@ -1,10 +1,22 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .venv/
+venv/
 # run logs: <repo>/.mae/runs/
-.mae/runs/
+.mae/
 # local scratch — project docs belong in the target repo's .mae/, not in the engine
 workspace/
+# editor / agent tooling state
+.claude/
+.idea/
+.vscode/
