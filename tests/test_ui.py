@@ -134,3 +134,17 @@ def test_run_history_uses_the_engines_own_verdict(tmp_path):
     (runs_dir / "20261013-000000.jsonl").write_text(json.dumps({"event": "finish", "tests_passed": True,
                                                                 "audit_clean": True}) + "\n")  # older log
     assert [r["status"] for r in ui.runs(tmp_path)] == ["needs review", "clean"]
+
+
+def test_clearing_the_run_history_deletes_only_the_logs(server, tmp_path):
+    runs_dir = tmp_path / ".mae" / "runs"
+    runs_dir.mkdir(parents=True)
+    for name in ("20260101-000000", "20260102-000000"):
+        (runs_dir / f"{name}.jsonl").write_text(json.dumps({"event": "start"}) + "\n")
+    (runs_dir.parent / "plan.md").write_text("plan")  # a sibling in .mae that must survive
+    code, out = _call(server, "/api/runs/clear", {"repo": str(tmp_path)})
+    assert code == 200 and out["deleted"] == 2 and out["runs"] == []
+    assert not list(runs_dir.glob("*.jsonl"))
+    assert (runs_dir.parent / "plan.md").exists()
+    code, out = _call(server, "/api/runs/clear", {"repo": str(tmp_path)})  # nothing left: a quiet no-op
+    assert out["deleted"] == 0 and out["runs"] == []

@@ -172,7 +172,8 @@ def runners(repo: Path) -> dict:
     for name in RUNNERS:
         if name in MODEL_RUNNERS:
             why = broken or llm.check(name, timeout=1)
-            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"], "knob": "model"}
+            out[name] = {"ready": not why, "why": why, "model": llm.settings(name)["model"], "knob": "model",
+                         "options": llm.models(name, timeout=2)}
         else:
             found = shutil.which(name)
             out[name] = {"ready": bool(found), "why": "" if found else f"the {name} CLI is not on PATH",
@@ -306,6 +307,17 @@ class Handler(BaseHTTPRequestHandler):
             return RUN.output(int(query.get("since") or 0))
         if method == "GET" and route == "runs":
             return runs(_repo(query.get("repo")))
+        if method == "POST" and route == "runs/clear":
+            repo = _repo(body.get("repo"))
+            directory = repo / MAE_DIR / "runs"
+            if not directory.is_dir():
+                return {"deleted": 0, "runs": []}
+            # newest mtime first: a run in progress keeps appending to its log, so the newest one stays
+            logs = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            active = RUN.running() and RUN.repo == str(repo)
+            for path in (logs[1:] if active else logs):
+                path.unlink(missing_ok=True)
+            return {"deleted": len(logs) - bool(active), "runs": runs(repo)}
         if method == "GET" and route == "runlog":
             repo, name = _repo(query.get("repo")), query.get("name", "")
             path = repo / MAE_DIR / "runs" / f"{Path(name).name}.jsonl"

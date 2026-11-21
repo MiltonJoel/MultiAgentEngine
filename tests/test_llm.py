@@ -189,6 +189,12 @@ def test_the_cli_knobs_map_to_flags():
     assert _codex_model_flags("gpt-5.1") == ["-m", "gpt-5.1"]
 
 
+def test_the_model_list_comes_from_the_endpoint(ollama):
+    """The UI's ollama/api picker only offers models the endpoint actually lists."""
+    ollama([], models=("qwen2.5-coder:7b", "llama3.2:1b"))
+    assert llm.models("ollama") == ["llama3.2:1b", "qwen2.5-coder:7b"]
+
+
 def test_tool_results_decay_with_age_so_each_turn_re_prefills_less():
     long = "x" * 5000
     messages = [{"role": "user", "content": "prompt"},

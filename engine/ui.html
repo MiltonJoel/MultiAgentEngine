@@ -114,7 +114,7 @@ main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
 .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .roles label, .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .roles select, .roles input.model { width: 100%; }
-.roles input.model { margin-top: 6px; }
+.roles select.model { margin-top: 6px; }
 .field { margin-top: 10px; }
 .field textarea { width: 100%; min-height: 64px; resize: vertical; font-family: var(--mono); font-size: 12px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -296,9 +296,9 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .roles { grid-template-columns: 1fr; gap: 10px; }
 .roles > div { display: grid; grid-template-columns: 78px auto minmax(0, 1fr); column-gap: 10px; row-gap: 4px; align-items: center; }
 .roles > div > label { grid-column: 1; grid-row: 1; margin: 0; }
-.roles > div > select { grid-column: 2 / 4; grid-row: 1; min-width: 0; }
+.roles > div > select.runner { grid-column: 2 / 4; grid-row: 1; min-width: 0; }
 .roles > div > .rstat { grid-column: 2; grid-row: 2; margin: 0; }
-.roles > div > input.model { grid-column: 3; grid-row: 2; margin: 0; padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
+.roles > div > select.model { grid-column: 3; grid-row: 2; margin: 0; padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
 .rstat { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); white-space: nowrap; min-height: 15px; }
 .rstat::before { content: ""; width: 6px; height: 6px; background: var(--faint); flex: none; }
 .rstat:empty::before { display: none; }
@@ -458,9 +458,9 @@ html.grabbing, html.grabbing * { cursor: grabbing !important; user-select: none 
         <div class="card" id="launchCard">
           <h2>Start a run</h2>
           <div class="roles">
-            <div><label for="r-coder">Coder</label><select id="r-coder"></select><div class="rstat" id="rs-coder"></div><input type="text" class="model" id="m-coder" list="m-dl-coder" aria-label="Coder model or effort" spellcheck="false"><datalist id="m-dl-coder"></datalist></div>
-            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer"></select><div class="rstat" id="rs-reviewer"></div><input type="text" class="model" id="m-reviewer" list="m-dl-reviewer" aria-label="Reviewer model or effort" spellcheck="false"><datalist id="m-dl-reviewer"></datalist></div>
-            <div><label for="r-auditor">Auditor</label><select id="r-auditor"></select><div class="rstat" id="rs-auditor"></div><input type="text" class="model" id="m-auditor" list="m-dl-auditor" aria-label="Auditor model or effort" spellcheck="false"><datalist id="m-dl-auditor"></datalist></div>
+            <div><label for="r-coder">Coder</label><select id="r-coder" class="runner"></select><div class="rstat" id="rs-coder"></div><select class="model" id="m-coder" aria-label="Coder model or effort"></select></div>
+            <div><label for="r-reviewer">Reviewer</label><select id="r-reviewer" class="runner"></select><div class="rstat" id="rs-reviewer"></div><select class="model" id="m-reviewer" aria-label="Reviewer model or effort"></select></div>
+            <div><label for="r-auditor">Auditor</label><select id="r-auditor" class="runner"></select><div class="rstat" id="rs-auditor"></div><select class="model" id="m-auditor" aria-label="Auditor model or effort"></select></div>
           </div>
           <button class="btn small" id="freeBtn" title="Local model via Ollama: no subscription, no API key">Use Ollama for all three</button>
           <details>
@@ -544,7 +544,7 @@ html.grabbing, html.grabbing * { cursor: grabbing !important; user-select: none 
       <button class="btn small" id="refreshRunsEmpty">Refresh</button>
     </div>
     <div class="grid history" id="historyGrid">
-      <div class="card"><h2>Runs <span class="spacer"></span><button class="btn small" id="refreshRuns">Refresh</button></h2><div class="runs" id="runs"></div></div>
+      <div class="card"><h2>Runs <span class="spacer"></span><button class="btn small" id="refreshRuns">Refresh</button><button class="btn small danger" id="clearRuns" title="Delete this repo's run logs in .mae/runs/ — the checkpoint commits stay">Clear</button></h2><div class="runs" id="runs"></div></div>
       <div class="stack" id="runDetail"><div class="card"><div class="empty">Select a run.</div></div></div>
     </div>
   </section>
@@ -576,6 +576,8 @@ let repo = decodeURIComponent(location.hash.slice(1)) || store.get("repo", "");
 let outNext = 0, lines = [], filter = "all";
 let live = { node: null, passes: 0, errors: null, audit: null, cost: 0, running: false, ended: null };
 let boardSeen = null;    // unit name -> state at the last board render; null = first render, nothing slides
+let pendingKnob = {};    // role -> knob parsed from a saved binding, applied once the choices are known
+let knobBuilt = {};     // role -> the choices its knob select was last built from; rebuilding wipes the choice
 
 async function api(path, body) {
   const res = await fetch("/api/" + path, {
@@ -647,6 +649,7 @@ async function openRepo(path) {
   store.set("recent", recent); store.set("repo", repo);
   $("recent").replaceChildren(...recent.map((r) => el("option", { value: r })));
   renderState(true);
+  guard(loadRuns)();   // the Runs tab badge shows the real count on reload, not the HTML default 0
   show(store.get("view", "mission"));
 }
 $("repoForm").addEventListener("submit", guard(async (e) => { e.preventDefault(); await openRepo($("repo").value); }));
@@ -674,7 +677,7 @@ function renderState(fresh) {
         el("option", { value: name }, (RUNNER_LABEL[name] || name) + (S.runners[name].ready ? "" : " (not ready)"))));
       const [name, ...model] = (saved[role] || S.defaults.agents[role]).split(":");
       sel.value = S.runners[name] ? name : S.defaults.agents[role];
-      $("m-" + role).value = model.join(":");
+      pendingKnob[role] = model.join(":");  // renderAgents applies it — only if it is one of the offered choices
     }
     const opts = store.get("opts:" + repo, {});
     $("gates").value = opts.gates || "";
@@ -696,10 +699,22 @@ function agentOf(role) {
 }
 function renderAgents() {
   for (const role of ROLES) {
-    const r = S && S.runners[$("r-" + role).value], box = $("m-" + role);
-    box.hidden = !r || !r.knob;   // every runner has a knob now: claude model, codex effort or model, ollama/api model
-    box.placeholder = r && r.model ? r.model : (r && r.options ? r.options.join(" · ") : "model");
-    $("m-dl-" + role).replaceChildren(...((r && r.options) || []).map((o) => el("option", { value: o })));
+    const r = S && S.runners[$("r-" + role).value], ms = $("m-" + role);
+    ms.hidden = !r || !r.knob;   // every runner has a knob: claude model, codex effort or model, ollama/api model
+    // rebuild only when the choices differ: a same-choices rebuild would wipe the just-picked knob
+    const key = `${r && r.model || ""}\n${((r && r.options) || []).join("\n")}`;
+    if (knobBuilt[role] !== key) {
+      knobBuilt[role] = key;
+      const was = ms.value;  // keep the choice when the same list is merely refreshed
+      ms.replaceChildren(  // fixed choices only — an unlisted model can no longer be typed in
+        el("option", { value: "" }, r && r.model ? `(default: ${r.model})` : "(default)"),
+        ...((r && r.options) || []).map((o) => el("option", { value: o }, o)));
+      ms.value = [...ms.options].some((o) => o.value === was) ? was : "";
+    }
+    if (role in pendingKnob) {  // fail-proof restore: a saved knob that is no longer offered falls back to default
+      ms.value = [...ms.options].some((o) => o.value === pendingKnob[role]) ? pendingKnob[role] : "";
+      delete pendingKnob[role];
+    }
     const agent = agentOf(role), g = $("n-" + role);
     // the node box fits a runner name; a runner:model string would write over the box edge.
     // Full binding (model included) rides in the node's <title> tooltip instead.
@@ -1075,7 +1090,7 @@ async function poll() {
     const wasRunning = live.running;
     live.running = out.running;
     if (!out.running && out.exit_code !== null) live.ended = out.exit_code;
-    if (wasRunning && !out.running) { refreshState().catch(() => {}); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
+    if (wasRunning && !out.running) { refreshState().catch(() => {}); guard(loadRuns)(); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
     if (out.repo && !repo) openRepo(out.repo);
   } catch (e) {
     if (/token/.test(e.message)) { toast(e.message, true); return; }
@@ -1116,6 +1131,16 @@ async function loadRuns() {
   }));
 }
 $("refreshRuns").addEventListener("click", guard(loadRuns));
+$("clearRuns").addEventListener("click", guard(async () => {
+  const count = +$("runCount").textContent || 0;
+  if (!count) return toast("No run logs to delete");
+  if (!confirm(`Delete this repo's ${count} run log${count > 1 ? "s" : ""} (.mae/runs/*.jsonl)?\n` +
+    "The checkpoint commits on the engine branches are not touched."))
+    return;
+  const out = await api("runs/clear", { repo });
+  loadRuns();
+  toast(out.deleted ? `Deleted ${out.deleted} run log${out.deleted > 1 ? "s" : ""}` : "Nothing to delete");
+}));
 $("refreshRunsEmpty").addEventListener("click", guard(loadRuns));
 
 async function showRun(r) {

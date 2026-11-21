@@ -236,7 +236,9 @@ mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirl
   añadir, cambiar de estado o borrar sin tocar el resto del plan; editores de `spec.md`,
   `plan.md` y `.mae/config.json` (<kbd>Ctrl</kbd>+<kbd>S</kbd> guarda).
 - **History** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
-  los commits de checkpoint de la rama, con el diff de cada uno.
+  los commits de checkpoint de la rama, con el diff de cada uno. El botón **Clear** borra
+  los logs de ejecuciones (el de la ejecución en curso se conserva); los checkpoints no se
+  tocan.
 
 La UI lanza el mismo `mae` como subproceso, una ejecución a la vez. Escucha solo en
 `127.0.0.1` y cada arranque genera un token que la API exige: abre la URL que imprime.

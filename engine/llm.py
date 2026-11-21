@@ -109,6 +109,18 @@ def check(runner: str, model: str = "", timeout: float = 3) -> str:
     return ""
 
 
+def models(runner: str, timeout: float = 2) -> list[str]:
+    """Model names the endpoint offers, [] when the list is unavailable — the UI picks from these."""
+    s = settings(runner)
+    if not s["url"] or (s["key_env"] and not s["key"]):
+        return []
+    try:
+        listed = _request(f"{s['url']}/models", s["key"], None, timeout)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        return []  # some endpoints don't list; check() says the rest at launch time
+    return sorted({m.get("id") for m in listed.get("data", []) if isinstance(m, dict) and m.get("id")})
+
+
 # ---- tools ----------------------------------------------------------------------------------------------
 
 def _tool(name: str, description: str, **params) -> dict:
