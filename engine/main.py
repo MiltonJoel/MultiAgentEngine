@@ -307,7 +307,7 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
     except BaseException as exc:
         runlog.log("aborted", error=f"{type(exc).__name__}: {exc}", usage=runlog.totals())
         print(f"\nAborted: {type(exc).__name__}: {exc}\nPlan: {_tally(str(plan))}\nUsage: {runlog.summary()}")
-        if isinstance(exc, (RuntimeError, TimeoutError)):  # an agent or a checkpoint failed: the message says it all
+        if isinstance(exc, RuntimeError | TimeoutError):  # an agent or a checkpoint failed: the message says it all
             raise SystemExit(EXIT_FAILED)
         raise
 

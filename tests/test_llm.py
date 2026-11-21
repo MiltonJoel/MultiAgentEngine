@@ -139,14 +139,14 @@ def test_rate_limit_is_retried(ollama, monkeypatch):
 def test_api_runner_sends_the_key(monkeypatch):
     fake = FakeModel([{"content": "ok"}])
     try:
-        llm.configure({"api": {"url": fake.url, "model": "some/free-model:free", "key_env": "FREE_KEY"}})
-        monkeypatch.setenv("FREE_KEY", "sk-test")
+        llm.configure({"api": {"url": fake.url, "model": "some/free-model:free", "key_env": "MAE_FREE_KEY"}})
+        monkeypatch.setenv("MAE_FREE_KEY", "sk-test")
         assert llm.check("api") == ""
         with tempfile.TemporaryDirectory() as repo:
             assert run_agent("api", "p", cwd=repo, label="auditor") == "ok"
         assert fake.requests[0]["auth"] == "Bearer sk-test"
-        monkeypatch.delenv("FREE_KEY")
-        assert "FREE_KEY" in llm.check("api")
+        monkeypatch.delenv("MAE_FREE_KEY")
+        assert "MAE_FREE_KEY" in llm.check("api")
     finally:
         fake.close()
         llm.configure(None)

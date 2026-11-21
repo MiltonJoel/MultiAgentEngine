@@ -69,7 +69,7 @@ Para pedir más trabajo después, añade o reabre una línea en `.mae/plan.md` y
 ejecutar `mae`:
 
 ```bash
-sed -i 's/^Rate limiting: DONE/Rate limiting: TODO — por usuario, no por IP/' .mae/plan.md
+sed -i.bak 's/^Rate limiting: DONE/Rate limiting: TODO — por usuario, no por IP/' .mae/plan.md && rm .mae/plan.md.bak
 mae
 ```
 
@@ -534,10 +534,12 @@ cuenta sus límites por minuto (el motor reintenta los 429 respetando `Retry-Aft
 
 `key_env` es el nombre de la variable de entorno con la clave (por defecto
 `MAE_API_KEY`); la clave nunca va en el archivo. También sirven `MAE_API_URL` y
-`MAE_API_MODEL`. Por seguridad, `key_env` no puede nombrar credenciales que no son de un
-modelo (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, …), `url` debe ser `http(s)://`, y la
-clave nunca viaja por `http` sin cifrar salvo a esta misma máquina. Al arrancar, `mae`
-imprime a qué host va cada clave.
+`MAE_API_MODEL`. Por seguridad, `key_env` solo puede ser un nombre `MAE_*` o la clave de un
+proveedor de modelos conocido (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`, …);
+para usar otra variable, añádela tú en tu entorno: `export MAE_ALLOWED_KEY_ENVS=MI_VARIABLE`.
+`url` debe ser `http(s)://`, la clave nunca viaja por `http` sin cifrar salvo a esta misma
+máquina, no sigue redirecciones y nunca se escribe en el log. Al arrancar, `mae` imprime a qué
+host va cada clave.
 
 ### Qué esperar
 

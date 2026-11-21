@@ -42,12 +42,15 @@ STALE_CHARS = 200  # older than that: a stub that keeps the tail
 MAX_CONTEXT_CHARS = 60000
 COMMAND_TIMEOUT = 900
 HTTP_RETRIES = 4
-# A repo's .mae/config.json picks `key_env`; it must never be able to point the key at an ambient credential
-# that has nothing to do with a model endpoint and ship it to an endpoint the same config chose.
-FORBIDDEN_KEY_ENVS = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
-                      "GITLAB_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "PYPI_API_TOKEN", "TWINE_PASSWORD", "DOCKER_PASSWORD",
-                      "CI_JOB_TOKEN", "SSH_AUTH_SOCK", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
-                      "DATABASE_URL", "HOME", "PATH"}
+# A repo's .mae/config.json picks `key_env`, and the same file can pick the endpoint the key is sent to. So the
+# variable must be a model key, never an ambient credential (GITHUB_TOKEN, AWS_*, HF_TOKEN, …): default-deny,
+# allowing MAE_* names, the usual model-provider key names, and whatever the user lists in MAE_ALLOWED_KEY_ENVS
+# (comma-separated, read from the user's environment — a repo cannot set it).
+MODEL_KEY_ENVS = {"OPENROUTER_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_AI_API_KEY",
+                  "MISTRAL_API_KEY", "DEEPSEEK_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY",
+                  "XAI_API_KEY", "PERPLEXITY_API_KEY", "DEEPINFRA_API_KEY", "NVIDIA_API_KEY", "SAMBANOVA_API_KEY",
+                  "MOONSHOT_API_KEY", "DASHSCOPE_API_KEY", "ZHIPUAI_API_KEY", "OLLAMA_API_KEY", "LITELLM_API_KEY"}
+ALLOWED_KEY_ENVS_ENV = "MAE_ALLOWED_KEY_ENVS"
 KEY_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
@@ -67,13 +70,20 @@ def configure(llm: dict | None) -> None:
         key_env = values.get("key_env")
         if key_env and not KEY_ENV_NAME.match(key_env):
             raise SystemExit(f"llm.{runner}.key_env: {key_env!r} is not an environment variable name")
-        if key_env and key_env.upper() in FORBIDDEN_KEY_ENVS:
-            raise SystemExit(f"llm.{runner}.key_env: {key_env} is not a model API key — refusing to send it "
-                             "to a model endpoint. Put the model key in its own variable, e.g. MAE_API_KEY")
+        if key_env and not model_key_env(key_env):
+            raise SystemExit(f"llm.{runner}.key_env: {key_env} is not a known model API key variable, so a repo's "
+                             f"config may not send it to an endpoint. Use MAE_API_KEY (or any MAE_* name), or allow "
+                             f"it yourself: export {ALLOWED_KEY_ENVS_ENV}={key_env}")
         url = values.get("url")
         if url and urlparse(url).scheme not in ("http", "https"):
             raise SystemExit(f"llm.{runner}.url: {url!r} must be an http:// or https:// URL")
         _config[runner] = dict(values)
+
+
+def model_key_env(name: str) -> bool:
+    """A variable a repo's config may name as the model key (see MODEL_KEY_ENVS)."""
+    allowed = {n.strip() for n in os.environ.get(ALLOWED_KEY_ENVS_ENV, "").split(",") if n.strip()}
+    return name.startswith("MAE_") or name in MODEL_KEY_ENVS or name in allowed
 
 
 def settings(runner: str, model: str = "") -> dict[str, Any]:
@@ -82,13 +92,15 @@ def settings(runner: str, model: str = "") -> dict[str, Any]:
     for key, env in ENV[runner].items():
         if os.environ.get(env):
             out[key] = os.environ[env]
+    user_url = out["url"].rstrip("/")  # the built-in default or the user's own environment
     out.update(_config.get(runner, {}))
     if model:
         out["model"] = model
     out["url"] = out["url"].rstrip("/")
     out["key"] = os.environ.get(out["key_env"], "") if out["key_env"] else ""
+    runlog.secret(out["key"])  # never written to a run log, whatever echoes it
     # the user chose this endpoint (built-in default or their own environment), not the repo's config file
-    out["user_url"] = "url" not in _config.get(runner, {})
+    out["user_url"] = bool(out["url"]) and out["url"] == user_url
     return out
 
 
@@ -96,6 +108,23 @@ def insecure_key_url(url: str) -> bool:
     """A key would travel in clear text: plain http to anything but this machine."""
     parsed = urlparse(url)
     return parsed.scheme != "https" and (parsed.hostname or "") not in LOOPBACK_HOSTS
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Model endpoints are never followed through redirects: urllib would forward the Authorization header to
+    wherever the redirect points (another host, or plain http), past the checks made on the configured URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirected to {newurl} — configure that URL instead",
+                                     headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def redact(text: str, key: str) -> str:
+    """The key, scrubbed from text that is about to be printed, raised or logged (an endpoint may echo it)."""
+    return text.replace(key, "[redacted]") if key else text
 
 
 def _request(url: str, key: str, payload: dict | None, timeout: float) -> dict:
@@ -108,7 +137,7 @@ def _request(url: str, key: str, payload: dict | None, timeout: float) -> dict:
         headers["Authorization"] = f"Bearer {key}"
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _OPENER.open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf8", errors="replace"))
 
 
@@ -213,7 +242,10 @@ class Workspace:
         return any(real == root or root in real.parents for root in self.roots)
 
     def path(self, raw: str) -> Path:
-        path = (self.cwd / Path(raw or ".").expanduser()).resolve()
+        try:
+            path = (self.cwd / Path(raw or ".").expanduser()).resolve()
+        except RuntimeError as exc:  # Python 3.10 raises RuntimeError on a symlink loop; 3.11+ an OSError
+            raise ValueError(f"{raw}: {exc}") from None
         if not self.inside(path):
             raise ValueError(f"{raw} is outside the repository and the allowed directories")
         return path
@@ -227,7 +259,7 @@ class Workspace:
             return f"error: unknown tool {name!r}"
         except TypeError as exc:
             return f"error: bad arguments for {name}: {exc}"
-        except (OSError, ValueError, re.error) as exc:
+        except (OSError, ValueError, RuntimeError, re.error) as exc:
             return f"error: {exc}"
 
     def _files(self, base: Path):
@@ -364,7 +396,7 @@ def _chat(s: dict, messages: list[dict], tools: list[dict], deadline: float, lab
         try:
             return _request(f"{s['url']}/chat/completions", s["key"], payload, remaining)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf8", errors="replace")[:500]
+            body = redact(exc.read().decode("utf8", errors="replace")[:500], s["key"])
             if exc.code not in (429, 500, 502, 503, 504) or attempt == HTTP_RETRIES:
                 raise RuntimeError(f"{label}: {s['url']} answered {exc.code}: {body}")
             try:
@@ -383,7 +415,7 @@ def _chat(s: dict, messages: list[dict], tools: list[dict], deadline: float, lab
                 raise TimeoutError(f"{label} ran out of its time budget waiting for the model") from exc
             raise RuntimeError(f"{label}: cannot reach {s['url']} ({exc})") from exc
         except ValueError as exc:  # a reply that is not JSON (a proxy's HTML error page), or a refused plain-http key
-            raise RuntimeError(f"{label}: unusable answer from {s['url']} ({exc})") from exc
+            raise RuntimeError(f"{label}: unusable answer from {s['url']} ({redact(str(exc), s['key'])})") from exc
     raise RuntimeError(f"{label}: no answer from {s['url']}")
 
 
@@ -408,7 +440,8 @@ def run_model(runner: str, prompt: str, cwd: str, label: str, *, write: bool = F
             try:
                 message = reply["choices"][0]["message"]
             except (KeyError, IndexError, TypeError):
-                raise RuntimeError(f"{label}: unexpected reply from {s['url']}: {json.dumps(reply)[:300]}")
+                raise RuntimeError(f"{label}: unexpected reply from {s['url']}: "
+                                   f"{redact(json.dumps(reply)[:300], s['key'])}")
             content = message.get("content") or ""
             calls = message.get("tool_calls") or _text_calls(content)
             if content and not calls:

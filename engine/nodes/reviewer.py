@@ -29,6 +29,8 @@ SCHEMA = {
     "required": ["problems"],
     "additionalProperties": False,
 }
+# The start of a findings object; one that then fails to decode (cut off mid-reply) must not be skipped.
+PROBLEMS_START = re.compile(r'\{\s*"problems"\s*:')
 NO_DIFF = "(not available — the repository is not under git, or nothing was committed)"
 
 
@@ -37,6 +39,25 @@ def _problem(item: dict) -> dict:
     return {"unit": str(item.get("unit") or ""), "file": str(item.get("file") or ""),
             "line": line if isinstance(line, int) and not isinstance(line, bool) else 0,
             "description": str(item.get("description") or ""), "suggested_fix": str(item.get("suggested_fix") or "")}
+
+
+def _nested_problems(value) -> list[dict] | None:
+    """Findings filed under a nested "problems" key (`{"problems": [], "notes": {"problems": [...]}}`) count too;
+    None if a nested one is malformed — fail closed, like the top level."""
+    found: list[dict] = []
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    if isinstance(value, dict) and "problems" in value:
+        items = value["problems"]
+        if not (isinstance(items, list) and all(isinstance(item, dict) for item in items)):
+            return None
+        found += items
+        children = [v for k, v in value.items() if k != "problems"]
+    for child in children:
+        inner = _nested_problems(child)
+        if inner is None:
+            return None
+        found += inner
+    return found
 
 
 def _parse_problems(raw: str) -> list[dict]:
@@ -51,6 +72,9 @@ def _parse_problems(raw: str) -> list[dict]:
         try:
             payload, end = decoder.raw_decode(raw, start)
         except ValueError:
+            if PROBLEMS_START.match(raw, start):  # a findings object cut off or malformed: never skip it
+                readable = False
+                break
             continue
         if not (isinstance(payload, dict) and "problems" in payload):
             continue
@@ -58,8 +82,12 @@ def _parse_problems(raw: str) -> list[dict]:
         if not (isinstance(problems, list) and all(isinstance(item, dict) for item in problems)):
             readable = False
             break
+        nested = _nested_problems({k: v for k, v in payload.items() if k != "problems"})
+        if nested is None:
+            readable = False
+            break
         readable, position = True, end
-        found += [p for p in map(_problem, problems) if p not in found]
+        found += [p for p in map(_problem, problems + nested) if p not in found]
     if readable:
         return found
     text = raw.strip()[:800] or "the agent returned an empty reply"

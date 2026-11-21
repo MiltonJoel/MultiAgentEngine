@@ -51,10 +51,15 @@ def reset_llm():
     llm.configure(None)
 
 
-def test_a_repo_config_cannot_aim_an_ambient_credential_at_an_endpoint(reset_llm):
-    for name in ("GITHUB_TOKEN", "aws_secret_access_key", "PATH"):
-        with pytest.raises(SystemExit, match="not a model API key"):
+def test_a_repo_config_cannot_aim_an_ambient_credential_at_an_endpoint(reset_llm, monkeypatch):
+    monkeypatch.delenv(llm.ALLOWED_KEY_ENVS_ENV, raising=False)
+    for name in ("GITHUB_TOKEN", "aws_secret_access_key", "PATH", "HF_TOKEN", "STRIPE_SECRET_KEY", "HEROKU_API_KEY",
+                 "SLACK_BOT_TOKEN", "VAULT_TOKEN"):  # default-deny: no list of every secret is ever complete
+        with pytest.raises(SystemExit, match="not a known model API key"):
             llm.configure({"api": {"url": "https://evil.example/v1", "key_env": name}})
+    llm.configure({"api": {"key_env": "MAE_WORK_KEY"}})  # any MAE_* name
+    monkeypatch.setenv(llm.ALLOWED_KEY_ENVS_ENV, "HF_TOKEN, OTHER")  # the user, not the repo, can widen it
+    llm.configure({"api": {"key_env": "HF_TOKEN"}})
     with pytest.raises(SystemExit, match="not an environment variable name"):
         llm.configure({"api": {"key_env": "A B"}})
     with pytest.raises(SystemExit, match="http"):
@@ -75,8 +80,8 @@ def test_a_key_never_travels_over_plain_http_to_another_host(reset_llm, monkeypa
 def test_the_dashboard_probe_withholds_the_key_from_a_repo_chosen_endpoint(reset_llm, monkeypatch):
     fake = FakeModel([], models=("m",))
     try:
-        monkeypatch.setenv("SOME_MODEL_KEY", "sk-should-not-leak")
-        llm.configure({"api": {"url": fake.url, "model": "m", "key_env": "SOME_MODEL_KEY"}})
+        monkeypatch.setenv("MAE_SOME_KEY", "sk-should-not-leak")
+        llm.configure({"api": {"url": fake.url, "model": "m", "key_env": "MAE_SOME_KEY"}})
         seen = []
         real = llm._request
         monkeypatch.setattr(llm, "_request", lambda url, key, *a: seen.append(key) or real(url, key, *a))
@@ -101,6 +106,90 @@ def test_the_key_goes_to_an_endpoint_the_user_set_in_their_own_environment(reset
         assert seen == ["sk-mine"]
     finally:
         fake.close()
+
+
+def test_a_config_restating_the_users_own_url_keeps_it_trusted(reset_llm, monkeypatch):
+    monkeypatch.setenv("MAE_API_URL", "https://api.example/v1")
+    llm.configure({"api": {"url": "https://api.example/v1/"}})
+    assert llm.settings("api")["user_url"]
+    llm.configure({"api": {"url": "https://other.example/v1"}})
+    assert not llm.settings("api")["user_url"]
+
+
+def test_a_redirect_never_carries_the_key_anywhere(reset_llm):
+    """urllib forwards Authorization through redirects, past every check made on the configured URL."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    seen = []
+
+    class Sink(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    sink = ThreadingHTTPServer(("127.0.0.1", 0), Sink)
+    target = f"http://127.0.0.1:{sink.server_port}/stolen"
+
+    class Redirect(Sink):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.end_headers()
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    for srv in (sink, source):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(llm.urllib.error.HTTPError, match="redirected to"):
+            llm._request(f"http://127.0.0.1:{source.server_port}/v1/models", "sk-secret", None, 5)
+        assert seen == []
+    finally:
+        for srv in (sink, source):
+            srv.shutdown()
+            srv.server_close()
+
+
+def test_an_endpoint_that_echoes_the_key_never_gets_it_into_the_run_log(tmp_path, reset_llm):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Echo(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = json.dumps({"error": f"bad {self.headers.get('Authorization')}"}).encode()
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Echo)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    path = runlog.start(tmp_path)
+    try:
+        key = "sk-echoed-secret-123"
+        runlog.secret(key)
+        s = {"url": f"http://127.0.0.1:{srv.server_port}/v1", "key": key, "model": "m"}
+        with pytest.raises(RuntimeError) as exc:
+            llm._chat(s, [], [], time.monotonic() + 30, "coder")
+        assert key not in str(exc.value) and "[redacted]" in str(exc.value)
+        runlog.log("aborted", error=f"raw {key}")  # and the log boundary scrubs whatever slips through
+    finally:
+        runlog.close()
+        srv.shutdown()
+        srv.server_close()
+    assert key not in path.read_text()
+
+
+def test_a_symlink_loop_is_a_tool_error_not_a_dead_pass(tmp_path):
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    ws = llm.Workspace(str(tmp_path), [], write=True, deadline=time.monotonic() + 60)
+    assert ws.run("read_file", {"path": "loop"}).startswith("error:")
+    assert ws.run("write_file", {"path": "loop", "content": "x"}).startswith("error:")
 
 
 def test_a_429_that_asks_to_wait_past_the_budget_fails_fast(monkeypatch):
@@ -128,6 +217,21 @@ def test_an_empty_example_before_real_findings_is_not_a_clean_audit():
              '"suggested_fix": "bcrypt"}]}')
     problems = _parse_problems(reply)
     assert [p["description"] for p in problems] == ["no hashing"]
+
+
+def test_a_truncated_findings_object_is_never_a_clean_audit():
+    for reply in ('{"problems": []}\n{"problems": [{"description": "real finding"}',
+                  '{"problems": [{"description": "real finding"}]\n{"problems": []}',  # cut off: last ] missing
+                  '{"problems": [{"description": "real"'):
+        problems = _parse_problems(reply)
+        assert problems and problems[0]["description"].startswith("unreadable reply"), reply
+
+
+def test_findings_nested_under_another_key_still_count():
+    reply = json.dumps({"problems": [], "notes": {"problems": [{"description": "hidden"}]}})
+    assert [p["description"] for p in _parse_problems(reply)] == ["hidden"]
+    bad = json.dumps({"problems": [], "notes": {"problems": "none"}})
+    assert _parse_problems(bad)[0]["description"].startswith("unreadable reply")
 
 
 def test_duplicate_findings_merge_and_a_malformed_object_fails_closed():
@@ -167,6 +271,17 @@ def test_a_rebound_host_or_foreign_origin_is_refused(server):
     assert _raw(server, "POST", "/api/stop", {"Origin": f"http://127.0.0.1:{server}"}, b"{}")[0] == 200
 
 
+def test_port_80_accepts_the_portless_host_browsers_send():
+    class Fake:
+        server_port = 80
+
+    handler = ui.Handler.__new__(ui.Handler)
+    handler.server = Fake()  # type: ignore[assignment]
+    for host, ok in (("127.0.0.1", True), ("localhost", True), ("127.0.0.1:80", True), ("evil.example", False)):
+        handler.headers = {"Host": host}  # type: ignore[assignment]
+        assert handler._same_host() is ok, host
+
+
 def test_the_page_ships_security_headers(server):
     code, headers, body = _raw(server, "GET", "/")
     assert code == 200 and b"MultiAgentEngine" in body
@@ -186,19 +301,32 @@ def test_an_oversized_or_bogus_body_is_refused_before_it_is_read(server):
     assert _raw(server, "POST", "/api/doc", {"Content-Length": "-5"})[0] == 400
 
 
-def test_stop_never_signals_a_process_it_did_not_capture(monkeypatch):
+def test_stop_never_signals_a_run_started_while_it_was_checking():
+    """Old race: stop() checked self.proc, a new run replaced it, then stop() signalled the replacement."""
     run = ui.Run()
-    assert run.stop() is False
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+    second = subprocess.Popen(sleeper, start_new_session=True)
+
+    class First(subprocess.Popen):
+        def poll(self):  # a concurrent /api/run lands right while stop() is checking liveness
+            alive = super().poll()
+            run.proc = second
+            return alive
+
+    first = First(sleeper, start_new_session=True)
     try:
-        run.proc = proc
+        run.proc = first
         assert run.stop() is True
-        proc.wait(timeout=10)
-        assert proc.returncode == -signal.SIGINT
-        assert run.stop() is False  # it is gone: nothing to signal
+        first.wait(timeout=10)
+        assert first.returncode == -signal.SIGINT
+        time.sleep(0.3)
+        assert second.poll() is None, "stop() signalled the run that replaced the one it checked"
     finally:
-        if proc.poll() is None:
-            proc.kill()
+        for proc in (first, second):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    assert ui.Run().stop() is False
 
 
 # --- checkpoints ------------------------------------------------------------------------------------------
@@ -225,6 +353,38 @@ def test_a_failed_git_add_never_yields_a_checkpoint(tmp_path, monkeypatch):
     assert real(str(repo), "rev-parse", "HEAD")[0] != 0  # nothing was committed
 
 
+def test_a_signal_during_a_checkpoint_waits_for_the_commit_instead_of_leaving_index_lock(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+    (repo / "a.py").write_text("x\n")
+
+    class Stop(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise Stop()
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    real = git._git
+    delivered_early = []
+
+    def commit_then_signal(repo_, *args, **kw):
+        if "commit" in args:
+            os.kill(os.getpid(), signal.SIGTERM)  # docker stop, right as the commit runs
+            delivered_early.append(False)
+        return real(repo_, *args, **kw)
+
+    monkeypatch.setattr(git, "_git", commit_then_signal)
+    try:
+        with pytest.raises(Stop):  # still delivered — just after the commit, not in the middle of it
+            git.checkpoint(str(repo), "m", strict=True)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert delivered_early == [False]
+    assert real(str(repo), "log", "--oneline")[1].endswith("m")
+    assert not (repo / ".git" / "index.lock").exists()
+    assert git.busy(str(repo)) is None
+
+
 def test_gitignored_run_logs_do_not_fail_the_checkpoint(tmp_path):
     """README tells users to gitignore .mae/runs/; git then exits 1 on the exclude pathspec — not a failure."""
     repo = _git_repo(tmp_path)
@@ -247,10 +407,14 @@ def test_two_runs_in_the_same_second_get_separate_logs(tmp_path, monkeypatch):
             return datetime(2026, 1, 1, 12, 0, 0, tzinfo=tz)
 
     monkeypatch.setattr(runlog, "datetime", Frozen)
-    first = runlog.start(tmp_path)
-    second = runlog.start(tmp_path)
+    paths = []
+    for n in range(3):
+        paths.append(runlog.start(tmp_path))
+        runlog.log("start", run=n)
     runlog.close()
-    assert first != second and first.exists() and second.exists()
+    assert len(set(paths)) == 3
+    for n, path in enumerate(paths):  # each log holds its own run only
+        assert [json.loads(line)["run"] for line in path.read_text().splitlines()] == [n]
 
 
 def test_a_non_utf8_prompt_override_fails_with_a_message(tmp_path):
@@ -349,6 +513,47 @@ def test_a_cli_timeout_kills_the_children_it_left_behind(tmp_path):
     assert not marker.exists()
 
 
+def test_a_timeout_reaches_children_after_the_cli_itself_exited(tmp_path):
+    """The CLI exits at once while its child keeps stdout open: the timeout must still kill the child."""
+    pid_file = tmp_path / "child.pid"
+    child = f"import os, time, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    script = f"import subprocess, sys\nsys.stdin.read()\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        cli._run_once([sys.executable, "-c", script], "p", str(tmp_path), 2, "coder", None)
+    assert time.monotonic() - started < 20
+    assert _gone(int(pid_file.read_text())), "the child outlived the timeout"
+
+
+def _gone(pid: int, seconds: float = 10) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:  # our own zombie child: reap it, or kill(pid, 0) keeps succeeding
+            if os.waitpid(pid, os.WNOHANG)[0]:
+                return True
+        except ChildProcessError:
+            pass
+        time.sleep(0.1)
+    return False
+
+
+def test_children_a_cli_leaves_behind_are_killed_when_the_pass_ends(tmp_path):
+    """A dev server or watcher the agent started (pipes detached) must not keep running — and editing — after."""
+    pid_file = tmp_path / "child.pid"
+    child = f"import os, time, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    script = (f"import subprocess, sys, time, pathlib\nsys.stdin.read()\n"
+              f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, "
+              f"stderr=subprocess.DEVNULL)\n"
+              f"while not pathlib.Path({str(pid_file)!r}).exists(): time.sleep(0.05)\nprint('done')\n")
+    lines, code = cli._run_once([sys.executable, "-c", script], "p", str(tmp_path), 30, "coder", None)
+    assert code == 0 and "done" in "".join(lines)
+    assert _gone(int(pid_file.read_text())), "the child outlived the pass"
+
+
 def test_a_missing_cli_is_a_clear_error(tmp_path):
     with pytest.raises(RuntimeError, match="not installed"):
         cli._run_once(["definitely-not-a-cli-xyz"], "p", str(tmp_path), 5, "coder", None)
@@ -422,26 +627,37 @@ def test_an_agent_failure_aborts_with_exit_1_and_logs_it(project, monkeypatch, t
 
 def test_sigterm_aborts_cleanly_and_kills_the_agent(tmp_path):
     """`docker stop` / systemd / a cancelled CI job: exit 143, an `aborted` event, and no orphaned agent."""
+    import queue
     repo = _git_repo(tmp_path / "repo")
     (repo / ".mae").mkdir()
     (repo / ".mae" / "spec.md").write_text("spec")
     (repo / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: TODO\n-->\n")
-    marker = tmp_path / "agent-still-running"
-    _stub(tmp_path / "bin", "claude", f"import sys, time, pathlib\nsys.stdin.read()\nprint('started', flush=True)\n"
-                                      f"time.sleep(4)\npathlib.Path({str(marker)!r}).write_text('x')\n")
+    pid_file = tmp_path / "agent.pid"
+    _stub(tmp_path / "bin", "claude", f"import os, sys, time, pathlib\nsys.stdin.read()\n"
+                                      f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                                      f"print('started', flush=True)\ntime.sleep(60)\n")
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT)}
     proc = subprocess.Popen([sys.executable, "-u", "-m", "engine", "--repo", str(repo), "--gate", "true",
                              "--agent", "reviewer=claude", "--agent", "auditor=claude"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        if "started" in line:
-            break
-    proc.send_signal(signal.SIGTERM)
-    out = proc.communicate(timeout=30)[0]
-    assert proc.returncode == main.EXIT_TERMINATED, out
-    time.sleep(5)
-    assert not marker.exists(), "the agent outlived the engine"
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout or ()], daemon=True).start()
+    seen = []
+    try:
+        deadline = time.monotonic() + 60
+        while not any("started" in line for line in seen):
+            assert time.monotonic() < deadline, "the agent never started:\n" + "".join(seen)
+            try:
+                seen.append(lines.get(timeout=1))
+            except queue.Empty:
+                assert proc.poll() is None, "the engine exited early:\n" + "".join(seen)
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == main.EXIT_TERMINATED, "".join(seen)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert _gone(int(pid_file.read_text())), "the agent outlived the engine"
     assert '"event": "aborted"' in next((repo / ".mae" / "runs").glob("*.jsonl")).read_text()
 
 

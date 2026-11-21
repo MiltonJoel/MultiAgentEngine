@@ -34,8 +34,14 @@ run like handing your shell to a junior engineer you cannot watch:
   call. Do not share the printed URL: it contains the token. Do not put it behind a reverse
   proxy that exposes it to a network.
 - **API keys** are read only from the environment variable named in the config
-  (`MAE_API_KEY` by default), never from files in the repository, and are never written to
-  the run log.
+  (`MAE_API_KEY` by default), never from files in the repository. Because a repository's config
+  also chooses the endpoint, the variable it names must be a `MAE_*` name or a known
+  model-provider key (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, …); to use any other variable, list it
+  yourself in `MAE_ALLOWED_KEY_ENVS` (comma-separated) — a repository cannot set that. Keys are
+  never sent over plain `http` except to this machine, never follow HTTP redirects, are scrubbed
+  from error messages and run logs, and `mae` prints which host each key goes to before it starts.
+  **Running `mae` in a repository still sends your key to the endpoint its config names** — read
+  `.mae/config.json` first. The dashboard's automatic checks never send it there.
 - **Checkpoint commits** exclude common secret files (`.env*`, `*.pem`, `*.key`, SSH keys,
   `.npmrc`, `.pypirc`, `.netrc`, credential JSON files, kubeconfigs) even if the target
   repository's `.gitignore` forgets them. This is a safety net, not a guarantee: keep secrets

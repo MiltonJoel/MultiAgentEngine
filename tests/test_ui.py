@@ -90,7 +90,7 @@ def test_api_launches_a_real_run_and_streams_it(server):
         (repo / ".mae" / "spec.md").write_text("spec")
         (repo / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: TODO\n-->\n")
         stub = bin_dir / "claude"
-        stub.write_text("#!/bin/sh\ncat >/dev/null\nsed -i 's/Login: TODO/Login: DONE/' .mae/plan.md\n"
+        stub.write_text("#!/bin/sh\ncat >/dev/null\nsed -i.bak 's/Login: TODO/Login: DONE/' .mae/plan.md && rm -f .mae/plan.md.bak\n"
                         "echo '{\"type\":\"result\",\"result\":\"{\\\"problems\\\": []}\",\"total_cost_usd\":0.01}'\n")
         stub.chmod(0o755)
         subprocess.run(["git", "init", "-q", str(repo)], check=True)

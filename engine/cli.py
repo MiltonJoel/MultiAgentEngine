@@ -64,7 +64,7 @@ def _retry_delay(text: str, now: float | None = None) -> float:
 def _kill_tree(proc: subprocess.Popen) -> None:
     """Kill the whole process group — the CLIs spawn children that would keep editing the repo.
     start_new_session made the CLI a group leader, so its group id is its pid: signalling proc.pid directly
-    still reaches the children after the CLI itself exited (getpgid on a dead pid would fail and miss them)."""
+    reaches the children without depending on the leader still existing (getpgid needs it alive or unreaped)."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except OSError:

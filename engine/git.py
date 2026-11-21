@@ -1,7 +1,10 @@
 """Checkpoints in the target repo: one branch per run, one commit per iteration.
 Everything degrades to a no-op when the target isn't a git repo."""
 import secrets
+import signal
 import subprocess
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,6 +71,22 @@ def busy(repo: str) -> str | None:
     return None
 
 
+@contextmanager
+def _signals_deferred():
+    """Hold SIGINT/SIGTERM until the checkpoint is done. Raised mid-`subprocess.run`, they make it SIGKILL the git
+    child mid-write, leaving .git/index.lock behind — and git.busy() then refuses every later run until a human
+    deletes it. A blocked signal stays pending and is delivered (and raised) as soon as the block lifts."""
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "pthread_sigmask"):
+        yield
+        return
+    held = {signal.SIGINT, signal.SIGTERM}
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, held)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 IGNORED_WARNING = "The following paths are ignored by one of your .gitignore files:"
 
 
@@ -81,7 +100,13 @@ def _only_ignored_warning(out: str) -> bool:
 
 def checkpoint(repo: str, message: str, strict: bool = False) -> str | None:
     """Commit everything except NEVER_COMMIT; None if there was nothing to commit.
-    strict: a failed commit raises CheckpointError instead of printing a warning."""
+    strict: a failed commit raises CheckpointError instead of printing a warning.
+    Ctrl-C and SIGTERM wait until it is done (bounded by TIMEOUT per git call), so it never leaves index.lock."""
+    with _signals_deferred():
+        return _checkpoint(repo, message, strict)
+
+
+def _checkpoint(repo: str, message: str, strict: bool) -> str | None:
 
     def failed(step: str, out: str, code: int) -> None:
         reason = out.splitlines()[0] if out else f"exit {code}"

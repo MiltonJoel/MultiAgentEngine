@@ -83,7 +83,8 @@ class Run:
     def _live(self) -> subprocess.Popen | None:
         """The running process, captured under the lock so a stop can never signal a run started after it."""
         with self.lock:
-            return self.proc if self.proc is not None and self.proc.poll() is None else None
+            proc = self.proc  # read once: the process checked is the process returned
+            return proc if proc is not None and proc.poll() is None else None
 
     def stop(self) -> bool:
         """SIGINT, like Ctrl-C: the engine kills its agent, logs `aborted` and keeps its checkpoints."""
@@ -316,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         Host must name this loopback server, and a browser's Origin, when sent, must be that same server."""
         port = cast(ThreadingHTTPServer, self.server).server_port
         allowed = {f"{host}:{port}" for host in LOOPBACK}
+        if port == 80:  # browsers leave the default port out of Host and Origin
+            allowed |= set(LOOPBACK)
         if self.headers.get("Host", "") not in allowed:
             return False
         origin = self.headers.get("Origin")
