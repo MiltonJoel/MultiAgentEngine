@@ -395,7 +395,9 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 
 Con Ctrl-C o `SIGTERM` el motor mata el grupo de procesos del agente, escribe `aborted` en el
 log y conserva los checkpoints; si llega a mitad de un commit, espera a que termine para no
-dejar `.git/index.lock`. Antes de arrancar comprueba que las CLIs de cada rol y
+dejar `.git/index.lock` — también a los hooks de git del repo. Bajo `docker stop` o systemd,
+da un margen mayor que lo que tarden esos hooks (`docker stop -t 60`, `TimeoutStopSec=60`):
+pasado el margen llega un `SIGKILL`, que nadie puede interceptar. Antes de arrancar comprueba que las CLIs de cada rol y
 las herramientas de los gates configurados existen (un gate relativo como
 `scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
 pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un

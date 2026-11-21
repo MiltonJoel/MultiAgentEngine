@@ -19,7 +19,9 @@ All notable changes to this project are documented here. The format follows
   `llm.*.url` must be `http(s)://`.
 - API keys are never sent over plain `http` to a host other than this machine, and model endpoints are
   never followed through HTTP redirects (urllib would forward the `Authorization` header to any host).
-- API keys are scrubbed from endpoint error messages and from every run-log line.
+- API keys are scrubbed from endpoint error messages and from every run-log field (before JSON escaping).
+- `mae` prints a `WARNING` when a key goes to an endpoint chosen by the repo's own config.
+- A redirecting endpoint now says where it redirects (`configure that URL instead`) at startup.
 - The dashboard's automatic runner check (which runs as soon as a repo is opened) no longer sends the
   API key to an endpoint set by the repo's config; the key is sent at launch, and `mae` prints where it goes.
 - `mae-ui` rejects requests whose `Host`/`Origin` is not its own loopback address (DNS-rebinding
@@ -29,12 +31,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 - An auditor reply that quoted an empty `{"problems": []}` example before its real findings was read as
-  a clean audit. All `problems` objects in a reply are now merged (nested ones included); a malformed,
-  truncated or decoder-exhausting (deeply nested) one fails closed, and an empty list surrounded by more
-  than a short note of prose is not accepted as clean (findings written as prose would otherwise vanish).
+  a clean audit. All `problems` objects in a reply are now merged (wrapped and nested ones included); a
+  malformed, truncated or decoder-exhausting (deeply nested) one fails closed. A `problems` key deeper in the
+  reply that is not a findings list (an echoed schema, a count) is ignored rather than failing the audit.
+- Findings written as prose beside an empty `{"problems": []}` vanished. Such an ambiguous reply is now sent
+  back once to the same agent to restate as JSON (a short prompt with no repo context); only an unambiguous
+  answer counts, so a chatty but genuinely clean audit still ends the run.
 - Ctrl-C or `SIGTERM` during a checkpoint SIGKILLed git mid-write and left `.git/index.lock`, so every later
   run was refused. Signals now wait for the checkpoint to finish (recorded by a temporary handler, not a
-  blocked signal mask, so a hung git hook can still be interrupted).
+  blocked signal mask, so a hung git hook can still be interrupted); a checkpoint error raised meanwhile is
+  kept as the cause of the interrupt.
 - The built-in agent's pass died on a symlink loop in the repository (Python 3.10).
 - A failed `git add` (or failed secret un-staging) could still produce a checkpoint commit of a tree the
   gates never ran on. It now fails the checkpoint (and the run, in strict mode). git's harmless exit 1 for
@@ -68,7 +74,7 @@ All notable changes to this project are documented here. The format follows
   allowed set now fails at startup with a message naming `MAE_ALLOWED_KEY_ENVS`.
 - The `claude`, `codex` and model runners take everything after `(prompt, cwd, label)` as keyword-only
   arguments.
-- The version has a single source, `engine.__version__`.
+- The version has a single source, `engine.__version__`; SPDX `license = "MIT"` (setuptools ≥ 77).
 
 ### Removed
 - Leftover artifacts of a demo run of the engine on its own repository (`ideas/`, `tests/test_idea.py`,

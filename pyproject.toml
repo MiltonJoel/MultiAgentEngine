@@ -3,7 +3,7 @@ name = "multiagent-engine"
 dynamic = ["version"]
 description = "LangGraph loop driving coding agents (the claude and codex CLIs, or free models through Ollama or any OpenAI-compatible API) against a repo until a spec is implemented, tested and audited."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "MiltonJoel"}]
 keywords = ["agents", "langgraph", "llm", "code-generation", "ollama", "claude", "codex"]
 classifiers = [
@@ -11,7 +11,6 @@ classifiers = [
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
@@ -43,17 +42,20 @@ mae = "engine.main:main"
 mae-ui = "engine.ui:main"
 
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["engine", "engine.nodes"]
+# engine.prompts here is the data directory engine/prompts/*.md (no __init__.py); `import engine.prompts` still
+# resolves to the module engine/prompts.py, which takes precedence over a namespace directory of the same name.
+packages = ["engine", "engine.nodes", "engine.prompts"]
 
 [tool.setuptools.dynamic]
 version = {attr = "engine.__version__"}
 
 [tool.setuptools.package-data]
-engine = ["prompts/*.md", "ui.html", "py.typed"]
+engine = ["ui.html", "py.typed"]
+"engine.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

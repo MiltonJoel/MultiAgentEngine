@@ -117,7 +117,12 @@ def _agents(parser: argparse.ArgumentParser, config: dict, flags: list[str], fre
     for agent in sorted(set(agents.values())):
         cli, model = split_agent(agent)
         if cli in MODEL_RUNNERS and (s := llm.settings(cli, model))["key"]:  # say where the key goes, up front
-            print(f"{cli}: sends ${s['key_env']} to {urlparse(s['url']).hostname}")
+            host = urlparse(s["url"]).hostname
+            if s["user_url"]:
+                print(f"{cli}: sends ${s['key_env']} to {host}")
+            else:  # the repo's own config chose this endpoint — the case SECURITY.md warns about
+                print(f"WARNING: {cli}: sends ${s['key_env']} to {host}, an endpoint chosen by this repo's "
+                      ".mae/config.json — make sure you trust it")
     return agents
 
 

@@ -16,10 +16,17 @@ def secret(value: str) -> None:
         _secrets.add(value)
 
 
-def _scrub(line: str) -> str:
-    for value in _secrets:
-        line = line.replace(value, "[redacted]")
-    return line
+def _scrub(value):
+    """Secrets replaced in every string inside value — before JSON escaping, which would hide a key with " or \\."""
+    if isinstance(value, str):
+        for secret_value in _secrets:
+            value = value.replace(secret_value, "[redacted]")
+        return value
+    if isinstance(value, dict):
+        return {_scrub(k): _scrub(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_scrub(v) for v in value]
+    return value
 
 
 def start(log_dir: str | Path) -> Path:
@@ -58,8 +65,8 @@ def log(event: str, **fields) -> None:
             _totals[key] = _totals.get(key, 0) + value
     if _sink is None:
         return
-    _sink.write(_scrub(json.dumps({"ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                                   "event": event, **fields}, ensure_ascii=False)) + "\n")
+    record = {"ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"), "event": event, **fields}
+    _sink.write(json.dumps(_scrub(record) if _secrets else record, ensure_ascii=False) + "\n")
 
 
 def totals() -> dict:

@@ -88,11 +88,30 @@ def _signals_deferred():
         sig: signal.signal(sig, lambda signum, frame: caught.append(signum)) for sig in held}
     try:
         yield
-    finally:
+    except BaseException as failure:
+        _restore(previous)
+        if caught:  # the signal still wins (exit 130/143), but the checkpoint's own error stays attached as its cause
+            try:
+                signal.raise_signal(caught[0])
+            except BaseException as interrupt:
+                raise interrupt from failure
+        raise
+    _restore(previous)
+    if caught:  # the first signal decides; the run is aborting, so a second one would change nothing
+        signal.raise_signal(caught[0])
+
+
+def _restore(previous: dict) -> None:
+    """Put the handlers back with both signals blocked, so one arriving mid-restore can't strand a recording
+    handler; a signal held meanwhile is delivered to the real handler as soon as the block lifts."""
+    mask = getattr(signal, "pthread_sigmask", None)
+    blocked = mask(signal.SIG_BLOCK, set(previous)) if mask else None
+    try:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        for signum in dict.fromkeys(caught):  # each once, in arrival order, to the handler that was in place
-            signal.raise_signal(signum)
+    finally:
+        if mask and blocked is not None:
+            mask(signal.SIG_SETMASK, blocked)
 
 
 IGNORED_WARNING = "The following paths are ignored by one of your .gitignore files:"

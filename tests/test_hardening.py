@@ -144,13 +144,42 @@ def test_a_redirect_never_carries_the_key_anywhere(reset_llm):
     for srv in (sink, source):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        with pytest.raises(llm.urllib.error.HTTPError, match="redirected to"):
+        with pytest.raises(llm.urllib.error.HTTPError, match=r"redirects \(302\) to"):
             llm._request(f"http://127.0.0.1:{source.server_port}/v1/models", "sk-secret", None, 5)
         assert seen == []
     finally:
         for srv in (sink, source):
             srv.shutdown()
             srv.server_close()
+
+
+def test_a_redirecting_endpoint_gets_an_actionable_message(reset_llm):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Upgrade(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(301)
+            self.send_header("Location", "https://api.example/v1/models")
+            self.end_headers()
+
+        do_POST = do_GET
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Upgrade)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{srv.server_port}/v1"
+        llm.configure({"api": {"url": url, "model": "m", "key_env": "MAE_NO_SUCH_KEY_SET"}})
+        llm.configure({"ollama": {"url": url, "model": "m"}})
+        why = llm.check("ollama")
+        assert "redirects (301) to https://api.example/v1/models" in why and "configure that URL" in why
+        with pytest.raises(RuntimeError, match=r"redirects \(301\) to https://api\.example"):
+            llm._chat({"url": url, "key": "", "model": "m"}, [], [], time.monotonic() + 30, "coder")
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_an_endpoint_that_echoes_the_key_never_gets_it_into_the_run_log(tmp_path, reset_llm):
@@ -178,11 +207,16 @@ def test_an_endpoint_that_echoes_the_key_never_gets_it_into_the_run_log(tmp_path
             llm._chat(s, [], [], time.monotonic() + 30, "coder")
         assert key not in str(exc.value) and "[redacted]" in str(exc.value)
         runlog.log("aborted", error=f"raw {key}")  # and the log boundary scrubs whatever slips through
+        odd = 'sk"quote\\back-1234'
+        runlog.secret(odd)
+        runlog.log("aborted", error=f"echo {odd}", nested={"deep": [odd]})  # JSON escaping must not hide it
     finally:
         runlog.close()
         srv.shutdown()
         srv.server_close()
-    assert key not in path.read_text()
+    text = path.read_text()
+    assert key not in text
+    assert all("quote" not in json.dumps(json.loads(line)) for line in text.splitlines())
 
 
 def test_a_symlink_loop_is_a_tool_error_not_a_dead_pass(tmp_path):
@@ -237,6 +271,44 @@ def test_findings_written_as_prose_beside_an_empty_list_are_not_a_clean_audit():
         assert _parse_problems(clean) == [], clean  # a short note is fine; an essay is not
 
 
+CHATTY_CLEAN = ("I reviewed the diff against the spec for every unit in scope. Login hashes passwords with "
+                "bcrypt and has tests for the lockout path; rate limiting is per user as the spec requires. "
+                'Everything checks out.\n\n{"problems": []}')
+PROSE_FINDING = ('CRITICAL: db.py line 42 builds SQL with f-string interpolation of user_id — SQL injection.\n'
+                 'I also checked auth.py and found nothing else of note, so overall it is mostly fine.\n'
+                 '{"problems": []}')
+
+
+def _agent_replying(monkeypatch, reply):
+    from engine.nodes import reviewer
+    calls = []
+    monkeypatch.setattr(reviewer, "run_agent", lambda agent, prompt, **kw: calls.append(prompt) or reply)
+    return reviewer, calls
+
+
+def test_a_chatty_but_clean_audit_is_restated_and_stays_clean(monkeypatch):
+    """A realistic preamble must not make a clean audit impossible (the run could never exit 0)."""
+    reviewer, calls = _agent_replying(monkeypatch, '{"problems": []}')
+    assert reviewer._settle("claude", CHATTY_CLEAN, ".", "auditor") == []
+    assert len(calls) == 1 and "Everything checks out" in calls[0]  # restated once, from its own words
+
+
+def test_prose_findings_beside_an_empty_list_come_back_as_findings(monkeypatch):
+    restated = json.dumps({"problems": [{"file": "db.py", "line": 42, "description": "SQL injection"}]})
+    reviewer, _ = _agent_replying(monkeypatch, restated)
+    assert [p["line"] for p in reviewer._settle("claude", PROSE_FINDING, ".", "auditor")] == [42]
+    reviewer, _ = _agent_replying(monkeypatch, "Sure! " * 100 + '{"problems": []}')  # still ambiguous: fail closed
+    assert reviewer._settle("claude", PROSE_FINDING, ".", "auditor")[0]["description"].startswith("unreadable")
+
+
+def test_an_unambiguous_reply_is_never_sent_back(monkeypatch):
+    reviewer, calls = _agent_replying(monkeypatch, "unused")
+    assert reviewer._settle("codex", '{"problems": []}', ".", "auditor") == []
+    assert reviewer._settle("codex", 'All good.\n{"problems": []}', ".", "auditor") == []
+    assert reviewer._settle("codex", "no json at all", ".", "auditor")[0]["description"].startswith("unreadable")
+    assert calls == []
+
+
 def test_a_reply_nested_past_the_decoders_depth_fails_closed_instead_of_crashing():
     deep = '{"problems": [], "a": ' + '{"a": ' * 5000 + "1" + "}" * 5000 + "}"
     assert _parse_problems(deep)[0]["description"].startswith("unreadable reply")
@@ -246,8 +318,20 @@ def test_a_reply_nested_past_the_decoders_depth_fails_closed_instead_of_crashing
 def test_findings_nested_under_another_key_still_count():
     reply = json.dumps({"problems": [], "notes": {"problems": [{"description": "hidden"}]}})
     assert [p["description"] for p in _parse_problems(reply)] == ["hidden"]
-    bad = json.dumps({"problems": [], "notes": {"problems": "none"}})
-    assert _parse_problems(bad)[0]["description"].startswith("unreadable reply")
+    wrapped = json.dumps({"result": {"problems": [{"description": "wrapped"}]}})
+    assert [p["description"] for p in _parse_problems(wrapped)] == ["wrapped"]
+
+
+def test_a_nested_problems_key_that_is_not_a_findings_list_is_ignored():
+    """An echoed schema or a summary count is not a finding — and must not turn a clean audit into a fake one."""
+    from engine.nodes.reviewer import SCHEMA
+    count = json.dumps({"problems": [], "summary": {"problems": 0}})
+    assert _parse_problems(count) == []
+    echoed = json.dumps(SCHEMA) + "\n" + json.dumps({"problems": []})
+    assert _parse_problems(echoed) == []
+    real = json.dumps({"problems": [{"description": "real"}], "schema": SCHEMA})
+    assert [p["description"] for p in _parse_problems(real)] == ["real"]
+    assert _parse_problems(json.dumps({"problems": "none"}))[0]["description"].startswith("unreadable")
 
 
 def test_duplicate_findings_merge_and_a_malformed_object_fails_closed():
@@ -401,6 +485,33 @@ def test_a_signal_during_a_checkpoint_waits_for_the_commit_instead_of_leaving_in
     assert git.busy(str(repo)) is None
 
 
+def test_a_signal_during_a_failing_checkpoint_keeps_the_failure_as_its_cause(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+    (repo / "a.py").write_text("x\n")
+
+    class Stop(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise Stop()
+
+    def broken(repo_, *args, **kw):
+        if "add" in args[:3]:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return 128, "fatal: unable to index file"
+        return git.subprocess.run(["true"]).returncode, ""
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    monkeypatch.setattr(git, "_git", broken)
+    try:
+        with pytest.raises(Stop) as exc:
+            git.checkpoint(str(repo), "m", strict=True)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert isinstance(exc.value.__cause__, git.CheckpointError)
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # recording handlers are gone
+
+
 def test_gitignored_run_logs_do_not_fail_the_checkpoint(tmp_path):
     """README tells users to gitignore .mae/runs/; git then exits 1 on the exclude pathspec — not a failure."""
     repo = _git_repo(tmp_path)
@@ -529,8 +640,9 @@ def test_a_cli_timeout_kills_the_children_it_left_behind(tmp_path):
     assert not marker.exists()
 
 
-def test_a_timeout_reaches_children_after_the_cli_itself_exited(tmp_path):
-    """The CLI exits at once while its child keeps stdout open: the timeout must still kill the child."""
+def test_a_timeout_kills_a_child_still_holding_the_output_pipe(tmp_path):
+    """The CLI exits at once while its child keeps stdout open, so the pass never ends on its own: the timeout
+    must still kill the child."""
     pid_file = tmp_path / "child.pid"
     child = f"import os, time, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
     script = f"import subprocess, sys\nsys.stdin.read()\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"

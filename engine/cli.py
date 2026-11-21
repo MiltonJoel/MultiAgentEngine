@@ -216,7 +216,7 @@ def run_claude(prompt: str, cwd: str, label: str, *, write: bool = False, timeou
         cmd += ["--allowedTools", "Bash"]
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
-    if schema:  # claude has no --output-schema; the callers tolerate a chatty reply
+    if schema:  # claude has no --output-schema; the nodes parse a chatty reply and have it restated if ambiguous
         prompt += "\n\nReply with JSON only — no prose, no fences — matching this schema:\n" + json.dumps(schema)
 
     def failed(lines: list[str]) -> str:

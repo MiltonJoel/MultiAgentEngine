@@ -110,13 +110,16 @@ def insecure_key_url(url: str) -> bool:
     return parsed.scheme != "https" and (parsed.hostname or "") not in LOOPBACK_HOSTS
 
 
+REDIRECTS = (301, 302, 303, 307, 308)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Model endpoints are never followed through redirects: urllib would forward the Authorization header to
     wherever the redirect points (another host, or plain http), past the checks made on the configured URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(req.full_url, code, f"redirected to {newurl} — configure that URL instead",
-                                     headers, fp)
+        raise urllib.error.HTTPError(req.full_url, code, f"redirects ({code}) to {newurl} — model endpoints are "
+                                     "not followed through redirects; configure that URL instead", headers, fp)
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
@@ -160,6 +163,8 @@ def check(runner: str, model: str = "", timeout: float = 3, send_key: bool = Tru
     try:
         listed = _request(f"{s['url']}/models", s["key"] if send_key else "", None, timeout)
     except urllib.error.HTTPError as exc:
+        if exc.code in REDIRECTS:
+            return f"{s['url']} {exc.reason}"
         if exc.code in (401, 403):
             if not send_key:
                 return ""  # the key was withheld on purpose; the launch-time check sends it
@@ -397,8 +402,10 @@ def _chat(s: dict, messages: list[dict], tools: list[dict], deadline: float, lab
             return _request(f"{s['url']}/chat/completions", s["key"], payload, remaining)
         except urllib.error.HTTPError as exc:
             body = redact(exc.read().decode("utf8", errors="replace")[:500], s["key"])
+            if exc.code in REDIRECTS:
+                raise RuntimeError(f"{label}: {s['url']} {exc.reason}") from exc
             if exc.code not in (429, 500, 502, 503, 504) or attempt == HTTP_RETRIES:
-                raise RuntimeError(f"{label}: {s['url']} answered {exc.code}: {body}")
+                raise RuntimeError(f"{label}: {s['url']} answered {exc.code}: {body}") from exc
             try:
                 delay = float(exc.headers.get("Retry-After") or 0)
             except ValueError:
