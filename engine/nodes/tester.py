@@ -6,12 +6,13 @@ import shlex
 import signal
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from engine import git, runlog
 from engine.state import GraphState
 
 # pytest exit 5 = no tests collected, which is not a failure of the code under test.
-DEFAULT_GATES = [{"cmd": "pytest -q --tb=line --no-header", "ok_codes": [0, 5]},
+DEFAULT_GATES: list[dict[str, Any]] = [{"cmd": "pytest -q --tb=line --no-header", "ok_codes": [0, 5]},
                  {"cmd": "ruff check . --output-format json"}]
 
 # "path:line[:col]: message" — pytest --tb=line, ruff, mypy, tsc, eslint compact, go vet, gcc.
@@ -110,7 +111,7 @@ def tester_node(state: GraphState) -> dict:
 
     repo = state["repo"]
     # the coder edits the plan freely; a status block it broke would otherwise silently drop or close units
-    errors = [{"file": state["plan"], "line": 0, "description": f"plan: {issue}"}
+    errors: list[dict[str, Any]] = [{"file": state["plan"], "line": 0, "description": f"plan: {issue}"}
               for issue in plan_issues(state["plan"], state.get("focus"))]
     for gate in state["gates"]:
         errors += run_gate(gate["cmd"], repo, tuple(gate.get("ok_codes") or (0,)))
@@ -135,9 +136,9 @@ def build_gates(gates: list | None) -> list[dict]:
     """Normalise a gates list: each entry is a command string, or {cmd, ok_codes} when a
     non-zero exit is fine. None = defaults; [] or [''] = nothing gates the coder."""
     out = []
-    for gate in DEFAULT_GATES if gates is None else gates:
-        if isinstance(gate, str):
-            gate = {"cmd": gate}
+    entries: list = DEFAULT_GATES if gates is None else gates
+    for entry in entries:
+        gate = {"cmd": entry} if isinstance(entry, str) else entry
         if not isinstance(gate, dict) or not isinstance(gate.get("cmd"), str):
             raise SystemExit(f"gates: each entry is a command string or {{\"cmd\": ...}}, got {gate!r}")
         ok_codes = gate.get("ok_codes") or [0]

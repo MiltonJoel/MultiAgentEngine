@@ -27,7 +27,11 @@ def load(name: str, repo: str | Path | None = None, **fields) -> str:
 
 def _format(source: Path, fields: dict) -> str:
     try:
-        return source.read_text(encoding="utf8").format(**fields)
+        text = source.read_text(encoding="utf8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{source}: not valid UTF-8 ({exc.reason} at byte {exc.start}) — save it as UTF-8")
+    try:
+        return text.format(**fields)
     except (KeyError, IndexError, ValueError) as exc:
         raise SystemExit(
             f"{source}: bad placeholder ({type(exc).__name__}: {exc}) — available: {', '.join(sorted(fields))}. "

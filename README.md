@@ -1,5 +1,9 @@
 # MultiAgentEngine
 
+[![ci](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml/badge.svg)](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml)
+![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+
 Un bucle de LangGraph que dirige agentes de programación — la CLI `claude`, la CLI
 `codex` o un **modelo gratuito** (local con Ollama, o cualquier API compatible con
 OpenAI) — contra un repositorio hasta que una especificación de arquitectura queda
@@ -75,7 +79,8 @@ mae
 
 ### 1. Instalar una vez
 
-Necesitas Python 3.10 o superior. No hace falta nada más del equipo de quien escribió
+Necesitas Python 3.10 o superior en **Linux o macOS** (en Windows, dentro de
+[WSL](https://learn.microsoft.com/windows/wsl/)). No hace falta nada más del equipo de quien escribió
 el motor: todo lo que usa está en este repositorio.
 
 Solo para usarlo (deja `mae` y `mae-ui` en el `PATH`):
@@ -89,8 +94,8 @@ Para modificarlo, clónalo en cualquier carpeta y usa un entorno virtual:
 ```bash
 git clone https://github.com/MiltonJoel/MultiAgentEngine.git
 cd MultiAgentEngine
-python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"                               # el motor + pytest y ruff
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"                               # el motor + pytest, ruff, mypy, build
 python -m pytest -q                                   # debería pasar todo
 ```
 
@@ -242,6 +247,10 @@ mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirl
 
 La UI lanza el mismo `mae` como subproceso, una ejecución a la vez. Escucha solo en
 `127.0.0.1` y cada arranque genera un token que la API exige: abre la URL que imprime.
+Rechaza peticiones cuyo `Host` u `Origin` no sea esa dirección local (protección contra
+DNS rebinding). Con un repo abierto comprueba cada runner, pero **no envía la clave de API**
+a un endpoint que haya elegido el `.mae/config.json` del repo; la clave solo sale al lanzar.
+Ver [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -334,11 +343,14 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
 | `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
+| `--version` | imprime la versión y sale |
 
 `mae` sale con código 0 solo si la cola queda cerrada, los gates en verde y la auditoría
 limpia; 2 si todo eso se cumple pero hace falta que una persona mire (hay unidades
 `BLOCKED`, o no se ejecutó ningún gate y el verde no comprobó nada); 1 en cualquier otro
-caso (útil en CI), 130 con Ctrl-C. Antes de arrancar comprueba que las CLIs de cada rol y
+caso (útil en CI), 130 con Ctrl-C y 143 con `SIGTERM` (`docker stop`, systemd, un job de CI
+cancelado): en ambos casos mata el grupo de procesos del agente, escribe `aborted` en el log
+y conserva los checkpoints. Antes de arrancar comprueba que las CLIs de cada rol y
 las herramientas de los gates configurados existen (un gate relativo como
 `scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
 pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
@@ -522,7 +534,10 @@ cuenta sus límites por minuto (el motor reintenta los 429 respetando `Retry-Aft
 
 `key_env` es el nombre de la variable de entorno con la clave (por defecto
 `MAE_API_KEY`); la clave nunca va en el archivo. También sirven `MAE_API_URL` y
-`MAE_API_MODEL`.
+`MAE_API_MODEL`. Por seguridad, `key_env` no puede nombrar credenciales que no son de un
+modelo (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, …), `url` debe ser `http(s)://`, y la
+clave nunca viaja por `http` sin cifrar salvo a esta misma máquina. Al arrancar, `mae`
+imprime a qué host va cada clave.
 
 ### Qué esperar
 
@@ -667,9 +682,13 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 
 ```
 MultiAgentEngine/
-├── pyproject.toml       dependencias y el comando `mae`
-├── conftest.py          añade la raíz del proyecto a sys.path para pytest
+├── pyproject.toml       dependencias, `mae`/`mae-ui`, ruff, mypy, pytest y coverage
+├── CHANGELOG.md         cambios por versión
+├── CONTRIBUTING.md      cómo preparar el entorno y qué exige un pull request
+├── SECURITY.md          modelo de amenazas y cómo reportar una vulnerabilidad
 ├── engine/
+│   ├── __init__.py      __version__ (única fuente de la versión)
+│   ├── __main__.py      `python -m engine`
 │   ├── main.py          parseo de la CLI, config, validación, bloqueo del plan, run()
 │   ├── graph.py         parseo del bloque de estado, enrutamiento, grafo de LangGraph
 │   ├── state.py         GraphState
@@ -690,16 +709,21 @@ MultiAgentEngine/
     ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
     ├── test_ops.py      checkpoints, bloqueo del plan, pasadas vacías
     ├── test_llm.py      modelos gratuitos contra un servidor compatible con OpenAI simulado
+    ├── test_robustness.py  casos límite del plan, git, límites de uso, ejecuciones completas
+    ├── test_hardening.py   confinamiento, credenciales, auditoría fail-closed, guardas HTTP, señales
     └── test_ui.py       API de la UI, token, ejecución completa con una CLI simulada
 ```
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q && ruff check .
+ruff check . && mypy && python -m pytest -q --cov
 ```
 
 GitHub Actions (`.github/workflows/tests.yml`) repite esto en un clon limpio con Python
-3.10 a 3.13 en cada push y pull request.
+3.10 a 3.13 (Linux) y 3.12 (macOS) en cada push y pull request, exige un 80 % de
+cobertura, construye el paquete y comprueba que el wheel se instala. Al subir un tag
+`vX.Y.Z`, `.github/workflows/release.yml` lo publica en PyPI. Ver
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
 apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -61,11 +62,16 @@ def _retry_delay(text: str, now: float | None = None) -> float:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process group — the CLIs spawn children that would keep editing the repo."""
+    """Kill the whole process group — the CLIs spawn children that would keep editing the repo.
+    start_new_session made the CLI a group leader, so its group id is its pid: signalling proc.pid directly
+    still reaches the children after the CLI itself exited (getpgid on a dead pid would fail and miss them)."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        proc.kill()
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, render) -> tuple[list[str], int]:
@@ -87,7 +93,9 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
     # started before the prompt is written, so a CLI that never reads stdin can't hang us
     timer = threading.Timer(timeout, on_timeout)
     timer.start()
-    lines = []
+    lines: list[str] = []
+    if proc.stdin is None or proc.stdout is None:  # both are PIPE; this only narrows the type
+        raise RuntimeError(f"{label}: no pipes to the CLI")
     try:
         try:
             proc.stdin.write(prompt)
@@ -103,6 +111,7 @@ def _run_once(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str,
             if shown:
                 print(f"[{label}] {shown}", flush=True)
         proc.wait()
+        _kill_tree(proc)  # a child the CLI left behind would keep editing the repo after the pass ended
     except BaseException:  # Ctrl-C included
         _kill_tree(proc)
         raise
@@ -120,7 +129,7 @@ def _stream(cmd: list[str], prompt: str, cwd: str, timeout: float, label: str, r
     on_attempt(lines, seconds): called after every attempt, failed ones included, so their spend is logged."""
     for attempt in range(MAX_WAITS + 1):
         started = time.monotonic()
-        lines = []
+        lines: list[str] = []
         try:
             lines, code = _run_once(cmd, prompt, cwd, timeout, label, render)
         finally:
@@ -197,7 +206,7 @@ def _claude_usage(lines: list[str]) -> dict:
             "output_tokens": usage.get("output_tokens", 0)}
 
 
-def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 600,
+def run_claude(prompt: str, cwd: str, label: str, *, write: bool = False, timeout: float = 600,
                add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     cmd = ["claude", "-p", "--permission-mode", "acceptEdits" if write else "plan",
            "--output-format", "stream-json", "--verbose"]  # --verbose is required by stream-json
@@ -225,7 +234,7 @@ def run_claude(prompt: str, cwd: str, label: str, write: bool = False, timeout: 
     return _claude_result(lines)
 
 
-def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1200,
+def run_codex(prompt: str, cwd: str, label: str, *, write: bool = False, timeout: float = 1200,
               add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     if add_dirs:
         print(f"[{label}] codex has no --add-dir: {', '.join(add_dirs)} will not be readable", flush=True)
@@ -256,7 +265,9 @@ def run_codex(prompt: str, cwd: str, label: str, write: bool = False, timeout: f
 
 # Which runner plays which role is configuration; every runner takes the same arguments, `model`
 # included — for the HTTP runners it picks the endpoint model, for the CLIs it maps to a flag.
-RUNNERS = {"claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api}
+RUNNERS: dict[str, Callable[..., str]] = {
+    "claude": run_claude, "codex": run_codex, "ollama": run_ollama, "api": run_api,
+}
 # Runners that call a model over HTTP instead of a CLI; they take an optional model: "ollama:qwen2.5-coder:14b".
 MODEL_RUNNERS = ("ollama", "api")
 # The CLI knobs after ":" — codex's is a reasoning effort (low/medium/high) or a model name,

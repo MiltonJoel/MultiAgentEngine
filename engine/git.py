@@ -60,32 +60,57 @@ def busy(repo: str) -> str | None:
         return None
     root = Path(git_dir)
     for marker, why in (("MERGE_HEAD", "a merge is in progress"), ("rebase-merge", "a rebase is in progress"),
-                        ("rebase-apply", "a rebase is in progress"), ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
+                        ("rebase-apply", "a rebase is in progress"),
+                        ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
                         ("index.lock", f"{root / 'index.lock'} exists (a git command crashed or is still running)")):
         if (root / marker).exists():
             return why
     return None
 
 
+IGNORED_WARNING = "The following paths are ignored by one of your .gitignore files:"
+
+
+def _only_ignored_warning(out: str) -> bool:
+    """git's "paths are ignored" notice, and nothing else that would mean a file was left unstaged."""
+    lines = [line for line in out.splitlines() if line.strip()]
+    if not lines or lines[0] != IGNORED_WARNING:
+        return False
+    return not any(line.startswith(("fatal:", "error:", "warning:")) for line in lines)
+
+
 def checkpoint(repo: str, message: str, strict: bool = False) -> str | None:
     """Commit everything except NEVER_COMMIT; None if there was nothing to commit.
     strict: a failed commit raises CheckpointError instead of printing a warning."""
-    _git(repo, "add", "-A", "--", ".", *EXCLUDE)
+
+    def failed(step: str, out: str, code: int) -> None:
+        reason = out.splitlines()[0] if out else f"exit {code}"
+        if strict:
+            raise CheckpointError(f"[git] checkpoint {step} failed: {reason} — fix it (git identity, hooks, "
+                                  "signing, permissions) or re-run with --no-git")
+        print(f"[git] {step} failed: {reason}", flush=True)
+
+    # a partial `add` would commit a tree the gates never ran on, and every later diff would lie
+    code, out = _git(repo, "-c", "advice.addIgnoredFile=false", "add", "-A", "--", ".", *EXCLUDE)
+    if code == 1 and _only_ignored_warning(out):
+        code = 0  # an exclude naming a gitignored path (.mae/runs/) makes git exit 1 after staging everything
+    if code:
+        failed("git add", out, code)
+        return None
     # `add` with excludes leaves alone what was already staged; unstage secrets explicitly
     secret_specs = [f":(glob){glob}" for glob in SECRET_GLOBS]
     if head(repo):  # back to the committed version: a tracked file keeps it, an untracked one leaves the index
-        _git(repo, "reset", "-q", "HEAD", "--", *secret_specs)
+        code, out = _git(repo, "reset", "-q", "HEAD", "--", *secret_specs)
     else:
-        _git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *secret_specs)
+        code, out = _git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *secret_specs)
+    if code:  # a secret could still be staged: never commit on top of that
+        failed("unstaging secrets", out, code)
+        return None
     code, out = _git(repo, "commit", "-m", message)
     if code:
         if "nothing to commit" in out or "nothing added to commit" in out or "no changes added" in out:
             return None
-        reason = out.splitlines()[0] if out else f"exit {code}"
-        if strict:
-            raise CheckpointError(f"[git] checkpoint commit failed: {reason} — fix it (git identity, hooks, "
-                                  "signing) or re-run with --no-git")
-        print(f"[git] commit failed: {reason}", flush=True)
+        failed("commit", out, code)
         return None
     sha = _git(repo, "rev-parse", "--short", "HEAD")[1]
     print(f"[git] {sha} {message}", flush=True)

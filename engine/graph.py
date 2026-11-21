@@ -100,8 +100,9 @@ def reopen_units(plan_path: str, problems: list[dict]) -> list[str]:
         match = STATUS_LINE.match(line.rstrip("\r"))
         if match and match.group("state") == "DONE" and match.group("name").strip().casefold() in notes:
             name = match.group("name").strip()
-            line = f"{name}: TODO — audit: {notes[name.casefold()]}" + ("\r" if line.endswith("\r") else "")
             reopened.append(name)
+            lines.append(f"{name}: TODO — audit: {notes[name.casefold()]}" + ("\r" if line.endswith("\r") else ""))
+            continue
         lines.append(line)
     if reopened:
         start, end = block.span("body")

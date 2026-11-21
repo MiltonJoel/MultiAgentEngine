@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 from engine import runlog
 
@@ -40,6 +42,14 @@ STALE_CHARS = 200  # older than that: a stub that keeps the tail
 MAX_CONTEXT_CHARS = 60000
 COMMAND_TIMEOUT = 900
 HTTP_RETRIES = 4
+# A repo's .mae/config.json picks `key_env`; it must never be able to point the key at an ambient credential
+# that has nothing to do with a model endpoint and ship it to an endpoint the same config chose.
+FORBIDDEN_KEY_ENVS = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+                      "GITLAB_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "PYPI_API_TOKEN", "TWINE_PASSWORD", "DOCKER_PASSWORD",
+                      "CI_JOB_TOKEN", "SSH_AUTH_SOCK", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
+                      "DATABASE_URL", "HOME", "PATH"}
+KEY_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 
 _config: dict[str, dict] = {}
@@ -54,12 +64,21 @@ def configure(llm: dict | None) -> None:
         for key, value in values.items():
             if key not in SETTINGS[runner] or not isinstance(value, str):
                 raise SystemExit(f"llm.{runner}: \"{key}\" is not a setting — use {', '.join(SETTINGS[runner])}")
+        key_env = values.get("key_env")
+        if key_env and not KEY_ENV_NAME.match(key_env):
+            raise SystemExit(f"llm.{runner}.key_env: {key_env!r} is not an environment variable name")
+        if key_env and key_env.upper() in FORBIDDEN_KEY_ENVS:
+            raise SystemExit(f"llm.{runner}.key_env: {key_env} is not a model API key — refusing to send it "
+                             "to a model endpoint. Put the model key in its own variable, e.g. MAE_API_KEY")
+        url = values.get("url")
+        if url and urlparse(url).scheme not in ("http", "https"):
+            raise SystemExit(f"llm.{runner}.url: {url!r} must be an http:// or https:// URL")
         _config[runner] = dict(values)
 
 
-def settings(runner: str, model: str = "") -> dict:
+def settings(runner: str, model: str = "") -> dict[str, Any]:
     """url, model and key for a runner; `model` (from "ollama:<model>") wins over everything."""
-    out = dict(SETTINGS[runner])
+    out: dict[str, Any] = dict(SETTINGS[runner])
     for key, env in ENV[runner].items():
         if os.environ.get(env):
             out[key] = os.environ[env]
@@ -68,12 +87,24 @@ def settings(runner: str, model: str = "") -> dict:
         out["model"] = model
     out["url"] = out["url"].rstrip("/")
     out["key"] = os.environ.get(out["key_env"], "") if out["key_env"] else ""
+    # the user chose this endpoint (built-in default or their own environment), not the repo's config file
+    out["user_url"] = "url" not in _config.get(runner, {})
     return out
 
 
+def insecure_key_url(url: str) -> bool:
+    """A key would travel in clear text: plain http to anything but this machine."""
+    parsed = urlparse(url)
+    return parsed.scheme != "https" and (parsed.hostname or "") not in LOOPBACK_HOSTS
+
+
 def _request(url: str, key: str, payload: dict | None, timeout: float) -> dict:
-    headers = {"Content-Type": "application/json"}
+    if urlparse(url).scheme not in ("http", "https"):  # MAE_*_URL from the environment included: never file://
+        raise ValueError(f"{url!r} is not an http:// or https:// URL")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if key:
+        if insecure_key_url(url):
+            raise ValueError(f"refusing to send an API key over plain http to {urlparse(url).hostname} — use https")
         headers["Authorization"] = f"Bearer {key}"
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
@@ -81,9 +112,13 @@ def _request(url: str, key: str, payload: dict | None, timeout: float) -> dict:
         return json.loads(resp.read().decode("utf8", errors="replace"))
 
 
-def check(runner: str, model: str = "", timeout: float = 3) -> str:
-    """Why this runner can't work right now, or '' if it can. Run before the run spends anything."""
+def check(runner: str, model: str = "", timeout: float = 3, send_key: bool = True) -> str:
+    """Why this runner can't work right now, or '' if it can. Run before the run spends anything.
+    send_key=False (the dashboard, which checks every runner as soon as a repo is opened) withholds the key
+    unless the endpoint came from the user's own environment: a repo's config must not be able to make a
+    mere click ship the key to an endpoint that same config chose."""
     s = settings(runner, model)
+    send_key = send_key or bool(s["user_url"])
     if not s["url"]:
         return (f"the {runner} runner has no endpoint — set \"llm\": {{\"{runner}\": {{\"url\": ...}}}} "
                 f"in .mae/config.json or {ENV[runner]['url']}")
@@ -91,10 +126,14 @@ def check(runner: str, model: str = "", timeout: float = 3) -> str:
         return f"the {runner} runner has no model — use {runner}:<model> or set llm.{runner}.model"
     if s["key_env"] and not s["key"]:
         return f"the {runner} runner needs its key in ${s['key_env']}"
+    if s["key"] and insecure_key_url(s["url"]):
+        return f"{s['url']} is plain http to another machine — the key in ${s['key_env']} needs an https:// URL"
     try:
-        listed = _request(f"{s['url']}/models", s["key"], None, timeout)
+        listed = _request(f"{s['url']}/models", s["key"] if send_key else "", None, timeout)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
+            if not send_key:
+                return ""  # the key was withheld on purpose; the launch-time check sends it
             return f"{s['url']} refused the key in ${s['key_env']} ({exc.code})"
         return ""  # some endpoints don't list models; the first call will say what's wrong
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -103,22 +142,29 @@ def check(runner: str, model: str = "", timeout: float = 3) -> str:
             return (f"Ollama is not reachable at {s['url']} ({exc}) — install it from https://ollama.com, "
                     f"start it, and run `ollama pull {s['model']}`")
         return f"{s['url']} is not reachable ({exc})"
-    names = {m.get("id") for m in listed.get("data", []) if isinstance(m, dict)}
+    names = _model_ids(listed)
     if runner == "ollama" and s["model"] not in names and f"{s['model']}:latest" not in names:
         return f"Ollama has no model {s['model']!r} — run `ollama pull {s['model']}`"
     return ""
 
 
+def _model_ids(listed) -> set[str]:
+    data = listed.get("data") if isinstance(listed, dict) else None
+    return {m["id"] for m in data or [] if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]}
+
+
 def models(runner: str, timeout: float = 2) -> list[str]:
-    """Model names the endpoint offers, [] when the list is unavailable — the UI picks from these."""
+    """Model names the endpoint offers, [] when the list is unavailable — the UI picks from these.
+    Sends the key only to an endpoint from the user's environment (see check); elsewhere an endpoint that
+    lists models only for a key just offers its default."""
     s = settings(runner)
-    if not s["url"] or (s["key_env"] and not s["key"]):
+    if not s["url"]:
         return []
     try:
-        listed = _request(f"{s['url']}/models", s["key"], None, timeout)
+        listed = _request(f"{s['url']}/models", s["key"] if s["user_url"] else "", None, timeout)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
         return []  # some endpoints don't list; check() says the rest at launch time
-    return sorted({m.get("id") for m in listed.get("data", []) if isinstance(m, dict) and m.get("id")})
+    return sorted(_model_ids(listed))
 
 
 # ---- tools ----------------------------------------------------------------------------------------------
@@ -158,9 +204,17 @@ class Workspace:
         self.write = write
         self.deadline = deadline
 
+    def inside(self, path: Path) -> bool:
+        """The real location (symlinks followed) is the repository or an allowed directory."""
+        try:
+            real = path.resolve()
+        except (OSError, RuntimeError):  # a symlink loop
+            return False
+        return any(real == root or root in real.parents for root in self.roots)
+
     def path(self, raw: str) -> Path:
         path = (self.cwd / Path(raw or ".").expanduser()).resolve()
-        if not any(path == root or root in path.parents for root in self.roots):
+        if not self.inside(path):
             raise ValueError(f"{raw} is outside the repository and the allowed directories")
         return path
 
@@ -177,10 +231,14 @@ class Workspace:
             return f"error: {exc}"
 
     def _files(self, base: Path):
-        for root, dirs, files in os.walk(base):
+        """Every file under base whose real location is still inside the workspace: a symlink in the repo
+        pointing at ~/.ssh must not let list_files or search read past the boundary read_file enforces."""
+        for root, dirs, files in os.walk(base):  # os.walk does not descend into symlinked directories
             dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
             for name in sorted(files):
-                yield Path(root) / name
+                path = Path(root) / name
+                if self.inside(path):
+                    yield path
 
     def _list_files(self, path: str = ".") -> str:
         base = self.path(path)
@@ -220,10 +278,12 @@ class Workspace:
         return f"replaced 1 occurrence in {path}"
 
     def _run_command(self, command: str) -> str:
-        timeout = max(1.0, min(COMMAND_TIMEOUT, self.deadline - time.monotonic()))
-        proc = subprocess.Popen(command, shell=True, cwd=self.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf8", errors="replace",
-                                start_new_session=True)
+        timeout = min(COMMAND_TIMEOUT, self.deadline - time.monotonic())
+        if timeout < 1:
+            return "error: the pass is out of time — no command was run; finish and reply"
+        proc = subprocess.Popen(command, shell=True, cwd=self.cwd,  # noqa: S602 — the tool *is* a shell
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf8", errors="replace", start_new_session=True)
         try:
             out, _ = proc.communicate(timeout=timeout)
         except BaseException as exc:  # timeout or Ctrl-C: never leave the command's children running
@@ -312,17 +372,22 @@ def _chat(s: dict, messages: list[dict], tools: list[dict], deadline: float, lab
             except ValueError:
                 delay = 0
             delay = min(max(delay, 5 * 2 ** attempt), 600)
+            if delay >= deadline - time.monotonic():
+                raise TimeoutError(f"{label} ran out of its time budget: {s['url']} answered {exc.code} and "
+                                   f"asked to wait {delay:.0f}s") from exc
             print(f"[{label}] {exc.code} from the model endpoint — retrying in {delay:.0f}s", flush=True)
             runlog.log("limit", label=label, sleep_min=round(delay / 60, 1))
             time.sleep(delay)
         except (urllib.error.URLError, OSError) as exc:
             if isinstance(exc, TimeoutError) or "timed out" in str(exc):
-                raise TimeoutError(f"{label} ran out of its time budget waiting for the model")
-            raise RuntimeError(f"{label}: cannot reach {s['url']} ({exc})")
+                raise TimeoutError(f"{label} ran out of its time budget waiting for the model") from exc
+            raise RuntimeError(f"{label}: cannot reach {s['url']} ({exc})") from exc
+        except ValueError as exc:  # a reply that is not JSON (a proxy's HTML error page), or a refused plain-http key
+            raise RuntimeError(f"{label}: unusable answer from {s['url']} ({exc})") from exc
     raise RuntimeError(f"{label}: no answer from {s['url']}")
 
 
-def run_model(runner: str, prompt: str, cwd: str, label: str, write: bool = False, timeout: float = 1800,
+def run_model(runner: str, prompt: str, cwd: str, label: str, *, write: bool = False, timeout: float = 1800,
               add_dirs: list[str] | None = None, schema: dict | None = None, model: str = "") -> str:
     s = settings(runner, model)
     if schema:  # tools and a JSON response format don't mix on most servers; ask for it in words, like claude
@@ -351,7 +416,7 @@ def run_model(runner: str, prompt: str, cwd: str, label: str, write: bool = Fals
             if not calls:
                 return content.strip()
             messages.append({"role": "assistant", "content": content if message.get("tool_calls") else "",
-                             "tool_calls": calls})
+                             "tool_calls": calls})  # type: ignore[dict-item]
             for call in calls:
                 fn = call.get("function") or {}
                 raw = fn.get("arguments")

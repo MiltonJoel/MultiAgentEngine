@@ -40,19 +40,28 @@ def _problem(item: dict) -> dict:
 
 
 def _parse_problems(raw: str) -> list[dict]:
-    """The first `{"problems": [...]}` object in a possibly fenced or chatty reply. Anything else — prose,
-    `{"problems": null}`, a list of strings — becomes one problem: a reply we can't read is never a clean audit."""
+    """Every `{"problems": [...]}` object in a possibly fenced or chatty reply, merged. Fails closed: a reply
+    that quotes an empty example before its real findings still reports the findings, and anything unreadable —
+    prose, `{"problems": null}`, a list of strings — becomes one problem: a reply we can't read is never clean."""
     decoder = json.JSONDecoder()
+    found, readable, position = [], False, 0
     for start in (m.start() for m in re.finditer(r"\{", raw)):
+        if start < position:  # inside an object already decoded
+            continue
         try:
-            payload, _ = decoder.raw_decode(raw, start)
+            payload, end = decoder.raw_decode(raw, start)
         except ValueError:
             continue
-        if isinstance(payload, dict) and "problems" in payload:
-            problems = payload["problems"]
-            if isinstance(problems, list) and all(isinstance(item, dict) for item in problems):
-                return [_problem(item) for item in problems]
+        if not (isinstance(payload, dict) and "problems" in payload):
+            continue
+        problems = payload["problems"]
+        if not (isinstance(problems, list) and all(isinstance(item, dict) for item in problems)):
+            readable = False
             break
+        readable, position = True, end
+        found += [p for p in map(_problem, problems) if p not in found]
+    if readable:
+        return found
     text = raw.strip()[:800] or "the agent returned an empty reply"
     return [{"unit": "", "file": "", "line": 0, "description": f"unreadable reply: {text}", "suggested_fix": ""}]
 

@@ -1,5 +1,6 @@
 """Append-only JSONL run log, one line per event (`tail -f` while running, `jq` after)."""
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,9 +16,22 @@ def start(log_dir: str | Path) -> Path:
     ignore = directory / ".gitignore"
     if not ignore.exists():  # logs must never ride along in a checkpoint commit
         ignore.write_text("*\n", encoding="utf8")
-    path = directory / f"{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S')}.jsonl"
+    stamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    path = directory / f"{stamp}.jsonl"
+    if path.exists():  # two runs (on different plans) started in the same second must not interleave one log
+        path = directory / f"{stamp}-{os.getpid()}.jsonl"
+    if _sink is not None:
+        _sink.close()
+    _totals.clear()
     _sink = path.open("a", encoding="utf8", buffering=1)
     return path
+
+
+def close() -> None:
+    global _sink
+    if _sink is not None:
+        _sink.close()
+        _sink = None
 
 
 def log(event: str, **fields) -> None:

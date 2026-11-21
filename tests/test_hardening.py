@@ -1,0 +1,452 @@
+"""Regression tests for the production-hardening pass: confinement, credentials, fail-closed parsing,
+the dashboard's request guards, checkpoint integrity, signals, and the in-process CLI paths."""
+import http.client
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from engine import __version__, cli, git, llm, main, prompts, runlog, ui
+from engine.nodes.reviewer import _parse_problems
+from tests.test_llm import FakeModel
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+# --- the built-in agent's workspace -----------------------------------------------------------------------
+
+def test_search_and_list_do_not_follow_symlinks_out_of_the_workspace(tmp_path):
+    repo, outside = tmp_path / "repo", tmp_path / "outside"
+    repo.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP-SECRET-VALUE\n")
+    (repo / "ok.py").write_text("TOP-SECRET-VALUE is not here, this is fine\n")
+    (repo / "leak.txt").symlink_to(outside / "secret.txt")
+    (repo / "linked_dir").symlink_to(outside, target_is_directory=True)
+    ws = llm.Workspace(str(repo), [], write=False, deadline=time.monotonic() + 60)
+    hits = ws.run("search", {"pattern": "TOP-SECRET", "path": "."})
+    assert "ok.py" in hits and "leak.txt" not in hits
+    assert "leak.txt" not in ws.run("list_files", {"path": "."})
+    assert ws.run("read_file", {"path": "leak.txt"}).startswith("error:")
+    assert ws.run("read_file", {"path": "linked_dir/secret.txt"}).startswith("error:")
+
+
+def test_a_command_is_refused_once_the_pass_is_out_of_time(tmp_path):
+    ws = llm.Workspace(str(tmp_path), [], write=True, deadline=time.monotonic() - 1)
+    assert "out of time" in ws.run("run_command", {"command": "touch ran"})
+    assert not (tmp_path / "ran").exists()
+
+
+# --- credentials ------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def reset_llm():
+    yield
+    llm.configure(None)
+
+
+def test_a_repo_config_cannot_aim_an_ambient_credential_at_an_endpoint(reset_llm):
+    for name in ("GITHUB_TOKEN", "aws_secret_access_key", "PATH"):
+        with pytest.raises(SystemExit, match="not a model API key"):
+            llm.configure({"api": {"url": "https://evil.example/v1", "key_env": name}})
+    with pytest.raises(SystemExit, match="not an environment variable name"):
+        llm.configure({"api": {"key_env": "A B"}})
+    with pytest.raises(SystemExit, match="http"):
+        llm.configure({"api": {"url": "file:///etc/passwd"}})
+    llm.configure({"api": {"url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY"}})  # documented
+
+
+def test_a_key_never_travels_over_plain_http_to_another_host(reset_llm, monkeypatch):
+    monkeypatch.setenv("MAE_API_KEY", "sk-test")
+    llm.configure({"api": {"url": "http://example.com/v1", "model": "m"}})
+    assert "https" in llm.check("api")
+    with pytest.raises(ValueError, match="plain http"):
+        llm._request("http://example.com/v1/models", "sk-test", None, 1)
+    assert not llm.insecure_key_url("http://127.0.0.1:11434/v1")
+    assert not llm.insecure_key_url("https://example.com/v1")
+
+
+def test_the_dashboard_probe_withholds_the_key_from_a_repo_chosen_endpoint(reset_llm, monkeypatch):
+    fake = FakeModel([], models=("m",))
+    try:
+        monkeypatch.setenv("SOME_MODEL_KEY", "sk-should-not-leak")
+        llm.configure({"api": {"url": fake.url, "model": "m", "key_env": "SOME_MODEL_KEY"}})
+        seen = []
+        real = llm._request
+        monkeypatch.setattr(llm, "_request", lambda url, key, *a: seen.append(key) or real(url, key, *a))
+        assert llm.check("api", send_key=False) == ""
+        assert llm.models("api") == ["m"]
+        assert seen == ["", ""]  # neither the probe nor the model list sent the key
+        assert llm.check("api") == ""  # an explicit launch does
+        assert seen[-1] == "sk-should-not-leak"
+    finally:
+        fake.close()
+
+
+def test_the_key_goes_to_an_endpoint_the_user_set_in_their_own_environment(reset_llm, monkeypatch):
+    fake = FakeModel([], models=("m",))
+    try:
+        monkeypatch.setenv("MAE_API_URL", fake.url)
+        monkeypatch.setenv("MAE_API_KEY", "sk-mine")
+        seen = []
+        real = llm._request
+        monkeypatch.setattr(llm, "_request", lambda url, key, *a: seen.append(key) or real(url, key, *a))
+        assert llm.models("api") == ["m"]
+        assert seen == ["sk-mine"]
+    finally:
+        fake.close()
+
+
+def test_a_429_that_asks_to_wait_past_the_budget_fails_fast(monkeypatch):
+    fake = FakeModel([{"content": "never"}], fail_first=10)
+    try:
+        monkeypatch.setattr(llm.time, "sleep", lambda s: pytest.fail("slept past the deadline"))
+        s = {"url": fake.url, "key": "", "model": "m"}
+        with pytest.raises(TimeoutError, match="time budget"):
+            llm._chat(s, [], [], time.monotonic() + 2, "coder")
+    finally:
+        fake.close()
+
+
+def test_a_non_json_answer_is_a_clear_runtime_error(monkeypatch):
+    monkeypatch.setattr(llm, "_request", lambda *a: (_ for _ in ()).throw(ValueError("Expecting value")))
+    with pytest.raises(RuntimeError, match="unusable answer"):
+        llm._chat({"url": "http://127.0.0.1:1/v1", "key": "", "model": "m"}, [], [], time.monotonic() + 30, "x")
+
+
+# --- fail-closed audit parsing ----------------------------------------------------------------------------
+
+def test_an_empty_example_before_real_findings_is_not_a_clean_audit():
+    reply = ('The format is {"problems": []}. Here are mine:\n'
+             '{"problems": [{"unit": "Login", "file": "a.py", "line": 3, "description": "no hashing", '
+             '"suggested_fix": "bcrypt"}]}')
+    problems = _parse_problems(reply)
+    assert [p["description"] for p in problems] == ["no hashing"]
+
+
+def test_duplicate_findings_merge_and_a_malformed_object_fails_closed():
+    finding = {"unit": "", "file": "a.py", "line": 1, "description": "d", "suggested_fix": ""}
+    twice = json.dumps({"problems": [finding]}) + "\n" + json.dumps({"problems": [finding]})
+    assert _parse_problems(twice) == [finding]
+    mixed = json.dumps({"problems": []}) + json.dumps({"problems": "none"})
+    assert _parse_problems(mixed)[0]["description"].startswith("unreadable reply")
+    assert _parse_problems('{"problems": []}') == []
+
+
+# --- the dashboard's request guards -----------------------------------------------------------------------
+
+@pytest.fixture
+def server():
+    srv = ui.serve(0, "secret-token")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_port
+    srv.shutdown()
+    srv.server_close()
+
+
+def _raw(port, method, path, headers=None, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request(method, path, body=body, headers={"X-MAE-Token": "secret-token", **(headers or {})})
+    res = conn.getresponse()
+    out = res.status, dict(res.getheaders()), res.read()
+    conn.close()
+    return out
+
+
+def test_a_rebound_host_or_foreign_origin_is_refused(server):
+    assert _raw(server, "GET", "/api/output", {"Host": f"evil.example:{server}"})[0] == 403
+    assert _raw(server, "GET", "/", {"Host": "evil.example"})[0] == 403
+    assert _raw(server, "POST", "/api/stop", {"Origin": "http://evil.example"}, b"{}")[0] == 403
+    assert _raw(server, "GET", "/api/output", {"Host": f"localhost:{server}"})[0] == 200
+    assert _raw(server, "POST", "/api/stop", {"Origin": f"http://127.0.0.1:{server}"}, b"{}")[0] == 200
+
+
+def test_the_page_ships_security_headers(server):
+    code, headers, body = _raw(server, "GET", "/")
+    assert code == 200 and b"MultiAgentEngine" in body
+    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    assert headers["Referrer-Policy"] == "no-referrer" and headers["X-Frame-Options"] == "DENY"
+
+
+def test_an_oversized_or_bogus_body_is_refused_before_it_is_read(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=10)
+    conn.putrequest("POST", "/api/doc")
+    conn.putheader("X-MAE-Token", "secret-token")
+    conn.putheader("Content-Length", str(ui.MAX_BODY + 1))
+    conn.endheaders()  # no body follows: a server that tried to read it would hang until the timeout
+    res = conn.getresponse()
+    assert res.status == 400 and b"between 0 and" in res.read()
+    conn.close()
+    assert _raw(server, "POST", "/api/doc", {"Content-Length": "-5"})[0] == 400
+
+
+def test_stop_never_signals_a_process_it_did_not_capture(monkeypatch):
+    run = ui.Run()
+    assert run.stop() is False
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        run.proc = proc
+        assert run.stop() is True
+        proc.wait(timeout=10)
+        assert proc.returncode == -signal.SIGINT
+        assert run.stop() is False  # it is gone: nothing to signal
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+# --- checkpoints ------------------------------------------------------------------------------------------
+
+def _git_repo(path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    for key, value in (("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        subprocess.run(["git", "-C", str(path), "config", key, value], check=True)
+    return path
+
+
+def test_a_failed_git_add_never_yields_a_checkpoint(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+    (repo / "a.py").write_text("x\n")
+    real = git._git
+
+    def broken(repo_, *args, **kw):
+        return (128, "fatal: unable to index file") if "add" in args[:3] else real(repo_, *args, **kw)
+
+    monkeypatch.setattr(git, "_git", broken)
+    assert git.checkpoint(str(repo), "m") is None
+    with pytest.raises(git.CheckpointError, match="git add"):
+        git.checkpoint(str(repo), "m", strict=True)
+    assert real(str(repo), "rev-parse", "HEAD")[0] != 0  # nothing was committed
+
+
+def test_gitignored_run_logs_do_not_fail_the_checkpoint(tmp_path):
+    """README tells users to gitignore .mae/runs/; git then exits 1 on the exclude pathspec — not a failure."""
+    repo = _git_repo(tmp_path)
+    (repo / ".gitignore").write_text(".mae/runs/\n")
+    (repo / ".mae" / "runs").mkdir(parents=True)
+    (repo / ".mae" / "runs" / "x.jsonl").write_text("{}\n")
+    (repo / "a.py").write_text("x\n")
+    assert git.checkpoint(str(repo), "m", strict=True)
+    assert git._only_ignored_warning(f"{git.IGNORED_WARNING}\n.mae/runs\nhint: use -f")
+    assert not git._only_ignored_warning(f"{git.IGNORED_WARNING}\n.mae/runs\nerror: open(x): Permission denied")
+
+
+# --- run logs, prompts, the plan lock ---------------------------------------------------------------------
+
+def test_two_runs_in_the_same_second_get_separate_logs(tmp_path, monkeypatch):
+    class Frozen:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime
+            return datetime(2026, 1, 1, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(runlog, "datetime", Frozen)
+    first = runlog.start(tmp_path)
+    second = runlog.start(tmp_path)
+    runlog.close()
+    assert first != second and first.exists() and second.exists()
+
+
+def test_a_non_utf8_prompt_override_fails_with_a_message(tmp_path):
+    (tmp_path / ".mae" / "prompts").mkdir(parents=True)
+    (tmp_path / ".mae" / "prompts" / "coder.md").write_bytes(b"caf\xe9 {spec}")
+    with pytest.raises(SystemExit, match="not valid UTF-8"):
+        prompts.check(tmp_path)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write a read-only file")
+def test_a_read_only_plan_fails_with_a_message(tmp_path):
+    plan = tmp_path / "plan.md"
+    plan.write_text("x")
+    plan.chmod(0o444)
+    try:
+        with pytest.raises(SystemExit, match="not writable"), main._plan_lock(plan):
+            pass
+    finally:
+        plan.chmod(0o644)
+
+
+# --- the CLI runners, against stub executables ------------------------------------------------------------
+
+def _stub(bin_dir: Path, name: str, script: str) -> None:
+    bin_dir.mkdir(exist_ok=True)
+    path = bin_dir / name
+    path.write_text(f"#!{sys.executable}\n{script}")
+    path.chmod(0o755)
+
+
+CLAUDE = r'''
+import json, re, sys
+prompt = sys.stdin.read()
+plan = ".mae/plan.md"
+text = open(plan).read()
+open(plan, "w").write(re.sub(r": TODO", ": DONE", text))
+print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"},
+                                                              {"type": "tool_use", "name": "Edit"}]}}))
+print(json.dumps({"type": "result", "result": '{"problems": []}', "total_cost_usd": 0.01,
+                  "usage": {"input_tokens": 10, "output_tokens": 5}}))
+'''
+
+CODEX = r'''
+import sys
+sys.stdin.read()
+out = sys.argv[sys.argv.index("-o") + 1]
+open(out, "w").write('{"problems": []}')
+print("codex: done")
+'''
+
+
+def test_run_claude_streams_progress_and_returns_the_final_answer(tmp_path, monkeypatch, capsys):
+    _stub(tmp_path / "bin", "claude", "import sys, json\nsys.stdin.read()\n"
+          "print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'hi'}]}}))\n"
+          "print(json.dumps({'type': 'result', 'result': 'final answer', 'total_cost_usd': 0.5,"
+          " 'usage': {'input_tokens': 1}}))\n")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    runlog.start(tmp_path / "runs")
+    try:
+        out = cli.run_claude("p", str(tmp_path), label="coder", write=True, add_dirs=[str(tmp_path)],
+                             schema={"type": "object"}, model="haiku")
+    finally:
+        runlog.close()
+    assert out == "final answer"
+    assert "cost=$0.5000" in capsys.readouterr().out
+    assert runlog.totals()["cost_usd"] == 0.5
+
+
+def test_run_claude_without_a_result_event_fails(tmp_path, monkeypatch):
+    _stub(tmp_path / "bin", "claude", "import sys\nsys.stdin.read()\nprint('crashed')\n")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    with pytest.raises(RuntimeError, match="no result event"):
+        cli.run_claude("p", str(tmp_path), label="coder")
+
+
+def test_run_codex_reads_the_last_message_file_and_cleans_up(tmp_path, monkeypatch):
+    _stub(tmp_path / "bin", "codex", CODEX)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    made = []
+    real = cli.tempfile.mkstemp
+    monkeypatch.setattr(cli.tempfile, "mkstemp", lambda **kw: made.append(real(**kw)) or made[-1])
+    out = cli.run_codex("p", str(tmp_path), label="auditor", schema={"type": "object"}, model="high",
+                        add_dirs=["/x"])
+    assert out == '{"problems": []}'
+    assert len(made) == 2 and not any(Path(path).exists() for _, path in made)  # last-message + schema files
+
+
+def test_a_cli_timeout_kills_the_children_it_left_behind(tmp_path):
+    marker = tmp_path / "child-alive"
+    child = f"import time, pathlib; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('x')"
+    script = (f"import subprocess, sys, time\nsys.stdin.read()\n"
+              f"subprocess.Popen([sys.executable, '-c', {child!r}])\ntime.sleep(60)\n")
+    with pytest.raises(TimeoutError):
+        cli._run_once([sys.executable, "-c", script], "p", str(tmp_path), 1, "coder", None)
+    time.sleep(4)
+    assert not marker.exists()
+
+
+def test_a_missing_cli_is_a_clear_error(tmp_path):
+    with pytest.raises(RuntimeError, match="not installed"):
+        cli._run_once(["definitely-not-a-cli-xyz"], "p", str(tmp_path), 5, "coder", None)
+
+
+def test_retry_delay_reads_reset_times():
+    assert cli._retry_delay("boom") == 0
+    assert cli._retry_delay("usage limit reached|2000000000", now=1999999000) == pytest.approx(1030)
+    assert cli._retry_delay("rate limit, resets 2030-01-01 00:00 UTC", now=0) > 0
+    assert cli._retry_delay("overloaded") == cli.DEFAULT_WAIT
+
+
+# --- the whole engine, in process -------------------------------------------------------------------------
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".mae").mkdir()
+    (repo / ".mae" / "spec.md").write_text("spec")
+    (repo / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: TODO\n-->\n")
+    (repo / ".gitignore").write_text(".mae/runs/\n")
+    _stub(tmp_path / "bin", "claude", CLAUDE)
+    _stub(tmp_path / "bin", "codex", CODEX)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    monkeypatch.chdir(repo)
+    previous = signal.getsignal(signal.SIGTERM)
+    yield repo
+    signal.signal(signal.SIGTERM, previous)
+    runlog.close()
+
+
+def _main(monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["mae", *argv])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    return exc.value.code
+
+
+def test_a_full_run_in_process_with_claude_coding_and_codex_auditing(project, monkeypatch, capsys):
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_CLEAN
+    out = capsys.readouterr().out
+    assert "audit_clean=True" in out and "Review with: git" in out
+    assert "Login: DONE" in (project / ".mae" / "plan.md").read_text()
+    log = next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+    assert '"event": "finish"' in log and '"exit_code": 0' in log
+
+
+def test_a_full_run_without_git(project, monkeypatch, capsys):
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--no-git") == main.EXIT_CLEAN
+    assert "checkpoints disabled" in capsys.readouterr().out
+
+
+def test_startup_refusals_name_the_problem(project, monkeypatch, capsys):
+    assert _main(monkeypatch, "--repo", str(project / "nope")) == 2
+    assert _main(monkeypatch, "--repo", str(project), "--spec", ".mae/plan.md") == 2
+    assert _main(monkeypatch, "--repo", str(project), "--agent", "coder") == 2
+    assert _main(monkeypatch, "--repo", str(project), "--allow-dir", str(project / "missing")) == 2
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "'unterminated") == 2
+    (project / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: DONE\n-->\n")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == 2
+    err = capsys.readouterr().err
+    assert "not a directory" in err and "different files" in err and "nothing left open" in err
+
+
+def test_an_agent_failure_aborts_with_exit_1_and_logs_it(project, monkeypatch, tmp_path):
+    _stub(tmp_path / "bin", "claude", "import sys\nsys.stdin.read()\nsys.exit(3)\n")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_FAILED
+    log = next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+    assert '"event": "aborted"' in log and "exit 3" in log
+
+
+def test_sigterm_aborts_cleanly_and_kills_the_agent(tmp_path):
+    """`docker stop` / systemd / a cancelled CI job: exit 143, an `aborted` event, and no orphaned agent."""
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".mae").mkdir()
+    (repo / ".mae" / "spec.md").write_text("spec")
+    (repo / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: TODO\n-->\n")
+    marker = tmp_path / "agent-still-running"
+    _stub(tmp_path / "bin", "claude", f"import sys, time, pathlib\nsys.stdin.read()\nprint('started', flush=True)\n"
+                                      f"time.sleep(4)\npathlib.Path({str(marker)!r}).write_text('x')\n")
+    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT)}
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "engine", "--repo", str(repo), "--gate", "true",
+                             "--agent", "reviewer=claude", "--agent", "auditor=claude"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if "started" in line:
+            break
+    proc.send_signal(signal.SIGTERM)
+    out = proc.communicate(timeout=30)[0]
+    assert proc.returncode == main.EXIT_TERMINATED, out
+    time.sleep(5)
+    assert not marker.exists(), "the agent outlived the engine"
+    assert '"event": "aborted"' in next((repo / ".mae" / "runs").glob("*.jsonl")).read_text()
+
+
+def test_version_flags():
+    for module in ("engine", "engine.ui"):
+        out = subprocess.run([sys.executable, "-m", module, "--version"], capture_output=True, text=True,
+                             env={**os.environ, "PYTHONPATH": str(ROOT)}, check=True, timeout=30).stdout
+        assert out.strip().endswith(__version__)

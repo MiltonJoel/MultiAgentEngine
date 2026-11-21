@@ -10,7 +10,7 @@ from engine.state import GraphState
 TIMEOUT = 5400
 # Skipped when fingerprinting a repo without git checkpoints: big, generated, or written by the engine itself.
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
-             ".ruff_cache", "runs"}
+             ".ruff_cache", ".claude", "runs"}
 
 
 def fingerprint(repo: str) -> frozenset:
