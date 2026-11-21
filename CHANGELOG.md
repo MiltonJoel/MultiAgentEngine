@@ -32,7 +32,8 @@ All notable changes to this project are documented here. The format follows
   a clean audit. All `problems` objects in a reply are now merged (nested ones included); a malformed or
   truncated one fails closed.
 - Ctrl-C or `SIGTERM` during a checkpoint SIGKILLed git mid-write and left `.git/index.lock`, so every later
-  run was refused. Signals now wait for the checkpoint to finish.
+  run was refused. Signals now wait for the checkpoint to finish (recorded by a temporary handler, not a
+  blocked signal mask, so a hung git hook can still be interrupted).
 - The built-in agent's pass died on a symlink loop in the repository (Python 3.10).
 - A failed `git add` (or failed secret un-staging) could still produce a checkpoint commit of a tree the
   gates never ran on. It now fails the checkpoint (and the run, in strict mode). git's harmless exit 1 for
@@ -60,6 +61,8 @@ All notable changes to this project are documented here. The format follows
   release workflow publishing to PyPI through trusted publishing.
 
 ### Changed
+- README reorganised: overview, feature list, table of contents, exit-code table, and Security,
+  Development and License sections; dashboard descriptions match the current UI.
 - **Breaking for some configs:** a repo config whose `llm.api.key_env` names a variable outside the
   allowed set now fails at startup with a message naming `MAE_ALLOWED_KEY_ENVS`.
 - The `claude`, `codex` and model runners take everything after `(prompt, cwd, label)` as keyword-only

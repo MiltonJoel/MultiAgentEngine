@@ -1,21 +1,60 @@
+<div align="center">
+
 # MultiAgentEngine
+
+**Un bucle de agentes de programación que implementa, prueba y audita tu especificación hasta terminarla.**
 
 [![ci](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml/badge.svg)](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![license](https://img.shields.io/badge/license-MIT-green)
+![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Un bucle de LangGraph que dirige agentes de programación — la CLI `claude`, la CLI
-`codex` o un **modelo gratuito** (local con Ollama, o cualquier API compatible con
-OpenAI) — contra un repositorio hasta que una especificación de arquitectura queda
-implementada, testeada y auditada.
+</div>
 
-**No necesitas ninguna suscripción de pago.** Con `mae --free` los tres roles usan un
-modelo local a través de [Ollama](https://ollama.com): sin cuenta, sin clave, sin coste.
-Ver [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
+MultiAgentEngine (`mae`) es un orquestador sobre [LangGraph](https://github.com/langchain-ai/langgraph)
+que dirige agentes de programación — la CLI `claude`, la CLI `codex` o un **modelo gratuito**
+(local con Ollama, o cualquier API compatible con OpenAI) — contra un repositorio hasta que una
+especificación de arquitectura queda implementada, testeada y auditada.
 
-Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, los
-valida con un paso de tests determinista, mantiene la cola de trabajo al día y se
-detiene cuando no queda nada abierto.
+Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, valida cada
+pasada con gates deterministas (tests, lint), mantiene la cola al día, guarda un checkpoint de git
+por pasada y se detiene cuando no queda nada abierto y la auditoría sale limpia.
+
+**No necesitas ninguna suscripción de pago:** con `mae --free` los tres roles usan un modelo local
+a través de [Ollama](https://ollama.com) — sin cuenta, sin clave, sin coste.
+
+## Características
+
+- **Bucle evaluador-optimizador** — coder → tester → revisor (si falla) o auditor (si pasa) → coder,
+  hasta cerrar la cola. El auditor reabre las unidades `DONE` que no cumplen la especificación.
+- **Gates deterministas** — pytest y ruff por defecto, o cualquier comando (`npm test`, `tsc`,
+  `eslint`, `go vet`…); su salida se convierte en errores estructurados `archivo:línea`.
+- **Cualquier modelo en cualquier rol** — `claude`, `codex`, Ollama o una API compatible con
+  OpenAI; mézclalos por rol.
+- **Seguro por diseño** — una rama y un commit por pasada (rollback a cualquier punto), secretos
+  excluidos de los commits, herramientas de archivos confinadas al repo, claves de API protegidas,
+  `SIGTERM`/Ctrl-C limpios. Ver [SECURITY.md](SECURITY.md).
+- **Observable** — log JSONL por ejecución con tiempos, tokens y coste; códigos de salida
+  pensados para CI.
+- **Panel web local** (`mae-ui`) — editar la cola y la especificación, lanzar y detener
+  ejecuciones, verlas en vivo y revisar el historial con sus diffs.
+- **Sin dependencias pesadas** — biblioteca estándar más LangGraph; sin framework web ni build de
+  front-end.
+
+## Contenido
+
+- [Ejemplo de uso](#ejemplo-de-uso)
+- [Inicio rápido](#inicio-rápido)
+- [Interfaz web — `mae-ui`](#interfaz-web--mae-ui)
+- [Los dos archivos que son tuyos](#los-dos-archivos-que-son-tuyos)
+- [Flags y códigos de salida](#flags-y-códigos-de-salida)
+- [Ajustes por repo — `.mae/config.json`](#ajustes-por-repo--maeconfigjson)
+- [El bucle](#el-bucle)
+- [Modelos gratuitos — sin suscripción](#modelos-gratuitos--sin-suscripción)
+- [Roles, CLIs y prompts](#roles-clis-y-prompts)
+- [Checkpoints](#checkpoints) · [El log de ejecución](#el-log-de-ejecución) · [Coste y límites](#coste-y-límites)
+- [Solución de problemas](#solución-de-problemas) · [Buenas prácticas](#buenas-prácticas)
+- [Seguridad](#seguridad) · [Desarrollo](#desarrollo) · [Licencia](#licencia)
 
 ---
 
@@ -233,14 +272,15 @@ mae-ui --repo ~/code/myproject          # abre http://127.0.0.1:8765/?token=…
 mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirla
 ```
 
-- **Mission** — el grafo coder → tester → reviewer/auditor con el nodo activo en vivo,
-  pasadas, errores de los gates, resultado de la auditoría y coste; elegir la CLI de cada
-  rol, gates, tope de pasadas y `--no-git`; lanzar y detener (detener = Ctrl-C: se
-  conservan los checkpoints); consola en vivo filtrable por agente.
-- **Queue & spec** — las unidades del bloque `ENGINE-STATUS` en columnas por estado:
+- **Run** — el grafo coder → tester → reviewer/auditor con el nodo activo en vivo,
+  pasadas, errores de los gates, resultado de la auditoría y coste; elegir el runner y el
+  modelo de cada rol (la lista de modelos sale del propio endpoint), gates, tope de pasadas y
+  `--no-git`; lanzar y detener (detener = Ctrl-C: se conservan los checkpoints); consola en
+  vivo filtrable por agente.
+- **Plan & spec** — las unidades del bloque `ENGINE-STATUS` en columnas por estado:
   añadir, cambiar de estado o borrar sin tocar el resto del plan; editores de `spec.md`,
   `plan.md` y `.mae/config.json` (<kbd>Ctrl</kbd>+<kbd>S</kbd> guarda).
-- **History** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
+- **Runs** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
   los commits de checkpoint de la rama, con el diff de cada uno. El botón **Clear** borra
   los logs de ejecuciones (el de la ejecución en curso se conserva); los checkpoints no se
   tocan.
@@ -329,7 +369,7 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 
 ---
 
-## Flags
+## Flags y códigos de salida
 
 | Flag | Significado |
 |---|---|
@@ -345,12 +385,17 @@ solo la prosa, con todo en `DONE`, no cambia nada.
 | `--no-git` | omite la rama por ejecución y los commits por iteración |
 | `--version` | imprime la versión y sale |
 
-`mae` sale con código 0 solo si la cola queda cerrada, los gates en verde y la auditoría
-limpia; 2 si todo eso se cumple pero hace falta que una persona mire (hay unidades
-`BLOCKED`, o no se ejecutó ningún gate y el verde no comprobó nada); 1 en cualquier otro
-caso (útil en CI), 130 con Ctrl-C y 143 con `SIGTERM` (`docker stop`, systemd, un job de CI
-cancelado): en ambos casos mata el grupo de procesos del agente, escribe `aborted` en el log
-y conserva los checkpoints. Antes de arrancar comprueba que las CLIs de cada rol y
+| Código | Significado |
+|---|---|
+| `0` | terminado y limpio: la cola está cerrada, los gates en verde y la auditoría sin hallazgos |
+| `1` | no terminó: tope de pasadas, un agente o un checkpoint falló, o la auditoría sigue encontrando problemas |
+| `2` | terminado, pero necesita que una persona mire: hay unidades `BLOCKED`, o no se ejecutó ningún gate |
+| `130` | interrumpido con Ctrl-C |
+| `143` | detenido con `SIGTERM` (`docker stop`, systemd, un job de CI cancelado) |
+
+Con Ctrl-C o `SIGTERM` el motor mata el grupo de procesos del agente, escribe `aborted` en el
+log y conserva los checkpoints; si llega a mitad de un commit, espera a que termine para no
+dejar `.git/index.lock`. Antes de arrancar comprueba que las CLIs de cada rol y
 las herramientas de los gates configurados existen (un gate relativo como
 `scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
 pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
@@ -549,8 +594,8 @@ grandes. Divide el plan en unidades pequeñas, sube `--max-iterations`, o mezcla
 modelo gratuito para revisor y auditor y uno mejor para el coder. El coste que se
 registra para estos runners es 0; los tokens sí se cuentan.
 
-En `mae-ui`, cada rol tiene un selector con `ollama (free, local)` y `api`, un campo para
-el modelo, y el botón **Use free models for every role**.
+En `mae-ui`, cada rol tiene un selector de runner (`ollama`, `api`, `claude`, `codex`), un
+selector de modelo con los que ofrece el endpoint, y el botón **Use Ollama for all three**.
 
 ---
 
@@ -680,7 +725,20 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 
 ---
 
-## Trabajar en el propio motor
+## Seguridad
+
+El motor ejecuta agentes que **corren comandos en tu máquina** con tus permisos. Antes de
+usarlo con especificaciones, planes o repositorios que no son tuyos, lee
+[SECURITY.md](SECURITY.md): explica el modelo de amenazas (gates y prompts por repo, el panel
+web, las claves de API, los checkpoints) y cómo reportar una vulnerabilidad de forma privada.
+
+En resumen: ejecuta repos ajenos dentro de un contenedor o una VM, revisa su
+`.mae/config.json` y `.mae/prompts/` antes de lanzar `mae`, y no compartas la URL de `mae-ui`
+(contiene el token).
+
+---
+
+## Desarrollo
 
 ```
 MultiAgentEngine/
@@ -724,8 +782,16 @@ ruff check . && mypy && python -m pytest -q --cov
 GitHub Actions (`.github/workflows/tests.yml`) repite esto en un clon limpio con Python
 3.10 a 3.13 (Linux) y 3.12 (macOS) en cada push y pull request, exige un 80 % de
 cobertura, construye el paquete y comprueba que el wheel se instala. Al subir un tag
-`vX.Y.Z`, `.github/workflows/release.yml` lo publica en PyPI. Ver
-[CONTRIBUTING.md](CONTRIBUTING.md).
+`vX.Y.Z`, `.github/workflows/release.yml` lo publica en PyPI.
 
 Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
 apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.
+
+Ver [CONTRIBUTING.md](CONTRIBUTING.md) para el flujo de trabajo, las reglas del proyecto y cómo
+se publica una versión, y [CHANGELOG.md](CHANGELOG.md) para el historial de cambios.
+
+---
+
+## Licencia
+
+[MIT](LICENSE) © 2026 MiltonJoel

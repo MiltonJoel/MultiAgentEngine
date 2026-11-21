@@ -7,6 +7,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Below this a diff rides whole in the reviewer/auditor prompt; above it they get the stat and read the
 # changed files themselves — every runner can, and a long diff is ~5k tokens they would mostly skip.
@@ -75,16 +76,23 @@ def busy(repo: str) -> str | None:
 def _signals_deferred():
     """Hold SIGINT/SIGTERM until the checkpoint is done. Raised mid-`subprocess.run`, they make it SIGKILL the git
     child mid-write, leaving .git/index.lock behind — and git.busy() then refuses every later run until a human
-    deletes it. A blocked signal stays pending and is delivered (and raised) as soon as the block lifts."""
-    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "pthread_sigmask"):
+    deletes it. The engine's handlers only record the signal meanwhile and it is re-raised afterwards.
+    Python-level handlers, not a blocked signal mask: a mask is inherited by git and its hooks, so a hook that
+    hangs could not be interrupted; handlers reset to the default in every program the engine starts."""
+    if threading.current_thread() is not threading.main_thread():
         yield
         return
-    held = {signal.SIGINT, signal.SIGTERM}
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, held)
+    held = (signal.SIGINT, signal.SIGTERM)
+    caught: list[int] = []
+    previous: dict[signal.Signals, Any] = {
+        sig: signal.signal(sig, lambda signum, frame: caught.append(signum)) for sig in held}
     try:
         yield
     finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        for signum in dict.fromkeys(caught):  # each once, in arrival order, to the handler that was in place
+            signal.raise_signal(signum)
 
 
 IGNORED_WARNING = "The following paths are ignored by one of your .gitignore files:"
