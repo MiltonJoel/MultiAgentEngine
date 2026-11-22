@@ -4,7 +4,6 @@ name: docs
 # GitHub Pages from master. One-time setup: Settings → Pages → Source: "GitHub Actions".
 on:
   push:
-    branches: [master]
   pull_request:
   workflow_dispatch:
 
