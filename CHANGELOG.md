@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- English README (`README.en.md`), with language links between both versions.
+
+### Fixed
+- `test_documents_live_in_the_target_repo_not_in_the_package` failed on macOS, where the temp directory
+  sits behind a symlink (`/var` → `/private/var`); the macOS CI job was red because of it.
+- README: the troubleshooting table quoted the old wording of the unreadable-status-line warning.
+
 ## [0.3.0] — 2026-11-21
 
 ### Security

@@ -1,2 +1,2 @@
-include LICENSE README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md
+include LICENSE README.md README.en.md CHANGELOG.md CONTRIBUTING.md SECURITY.md
 recursive-include tests *.py

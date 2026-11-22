@@ -9,6 +9,8 @@
 ![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
+[English](README.en.md) · **Español**
+
 </div>
 
 MultiAgentEngine (`mae`) es un orquestador sobre [LangGraph](https://github.com/langchain-ai/langgraph)
@@ -397,8 +399,9 @@ Con Ctrl-C o `SIGTERM` el motor mata el grupo de procesos del agente, escribe `a
 log y conserva los checkpoints; si llega a mitad de un commit, espera a que termine para no
 dejar `.git/index.lock` — también a los hooks de git del repo. Bajo `docker stop` o systemd,
 da un margen mayor que lo que tarden esos hooks (`docker stop -t 60`, `TimeoutStopSec=60`):
-pasado el margen llega un `SIGKILL`, que nadie puede interceptar. Antes de arrancar comprueba que las CLIs de cada rol y
-las herramientas de los gates configurados existen (un gate relativo como
+pasado el margen llega un `SIGKILL`, que nadie puede interceptar.
+
+Antes de arrancar comprueba que las CLIs de cada rol y las herramientas de los gates configurados existen (un gate relativo como
 `scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
 pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
 `index.lock` huérfano. Un gate configurado cuya herramienta falta es un error, no un
@@ -526,6 +529,11 @@ Cada hallazgo indica su unidad, y **el motor la reabre**: la línea pasa a
 auditoría se repite** hasta salir limpia. Solo una auditoría sin hallazgos termina la
 ejecución. Las unidades `BLOCKED` no se reabren.
 
+La auditoría falla en cerrado: una respuesta ilegible — solo prosa, un objeto de hallazgos
+truncado o mal formado — nunca es una auditoría limpia. Una respuesta con la lista de hallazgos
+vacía pero rodeada de más que una nota breve de prosa se devuelve una vez al mismo agente para
+que la reescriba como JSON, así los hallazgos escritos en prosa no se pierden.
+
 Los diffs que se envían al revisor y al auditor van completos si son cortos (menos de 2000
 caracteres); si son largos, solo el `--stat` y los agentes de solo lectura abren los
 archivos cambiados ellos mismos.
@@ -586,7 +594,7 @@ proveedor de modelos conocido (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `OPENAI_API
 para usar otra variable, añádela tú en tu entorno: `export MAE_ALLOWED_KEY_ENVS=MI_VARIABLE`.
 `url` debe ser `http(s)://`, la clave nunca viaja por `http` sin cifrar salvo a esta misma
 máquina, no sigue redirecciones y nunca se escribe en el log. Al arrancar, `mae` imprime a qué
-host va cada clave.
+host va cada clave, con un `WARNING` si ese host lo eligió el config del propio repo.
 
 ### Qué esperar
 
@@ -698,13 +706,15 @@ Los mensajes del motor están en inglés; aquí aparecen tal cual para que pueda
 |---|---|
 | `spec file not found: <repo>/.mae/spec.md` | Créalo, o apunta `--spec` / `"spec"` al tuyo. La versión `plan` de este error imprime un bloque inicial para copiar. |
 | `has nothing left open — every item is DONE or BLOCKED` | Funciona como debe. Añade una línea `TODO` o reabre una. |
-| `WARNING: unreadable status line, it will be ignored` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
+| `WARNING: unreadable status line, the engine ignores it` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
 | Escribiste una sección nueva pero no se ejecuta nada | La prosa no participa en el enrutamiento. Añade una línea `<nombre>: TODO` dentro del bloque. |
 | `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. Runners: claude, codex, ollama, api. |
 | `the claude CLI is not on PATH` y no tienes suscripción | Usa `mae --free` (Ollama) o el runner `api` con un plan gratuito. |
 | `Ollama is not reachable at http://localhost:11434/v1` | Ollama no está instalado o no está corriendo: instálalo y ejecuta `ollama serve`. |
 | `Ollama has no model 'qwen2.5-coder:7b'` | `ollama pull qwen2.5-coder:7b`, o elige uno que ya tengas con `--agent ROLE=ollama:<modelo>`. |
 | El modelo local responde sin usar herramientas o ignora el plan | Contexto demasiado corto: arranca Ollama con `OLLAMA_CONTEXT_LENGTH=32768`, o usa un modelo mayor. |
+| `llm.api.key_env: X is not a known model API key variable` | El config del repo nombra una variable que no es una clave de modelo. Usa `MAE_API_KEY`, o permítela tú: `export MAE_ALLOWED_KEY_ENVS=X`. |
+| `... redirects (301) to https://...` | El endpoint redirige (a menudo `http` → `https`). Pon la URL final en el config o en `MAE_*_URL`. |
 | `another run already holds <plan>` | Hay otra ejecución sobre ese plan. Espera o termínala. |
 | El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
 | `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |

@@ -143,7 +143,7 @@ def test_short_diffs_still_ride_in_the_prompt_whole():
 def test_documents_live_in_the_target_repo_not_in_the_package():
     parser = build_parser()
     with tempfile.TemporaryDirectory() as d:
-        repo = Path(d)
+        repo = Path(d).resolve()  # main() resolves --repo; macOS's temp dir sits behind a symlink (/var -> /private/var)
         with pytest.raises(SystemExit):
             _doc(parser, None, None, repo, DEFAULT_PLAN, "plan")
 
