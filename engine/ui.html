@@ -319,7 +319,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .board .col { padding: 8px 12px 0; border-left: 1px solid var(--line); }
 .board .col:first-child { border-left: 0; padding-left: 0; }
 .board .col h3 { margin-bottom: 4px; }
-.board .unit .ctl { margin-left: auto; justify-content: flex-end; }
+.board .unit .ctl { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; max-width: 100%; }
 /* state changes: drag the tile on a fine pointer, pick from the select on touch */
 @media (pointer: fine) {
   .unit.edit .ctl select { display: none; }   /* the chip is the readout; the mouse does the rest */

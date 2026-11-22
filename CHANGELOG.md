@@ -7,12 +7,19 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Documentation site (`docs/`, built with Zensical, published to GitHub Pages by
+  `.github/workflows/docs.yml`): getting started, guides, concepts, CLI/config/run-log/runner reference,
+  security, troubleshooting, with dashboard screenshots. CI builds it in strict mode on every pull request.
 - English README (`README.en.md`), with language links between both versions.
 
 ### Fixed
 - `test_documents_live_in_the_target_repo_not_in_the_package` failed on macOS, where the temp directory
   sits behind a symlink (`/var` → `/private/var`); the macOS CI job was red because of it.
 - README: the troubleshooting table quoted the old wording of the unreadable-status-line warning.
+- Dashboard: on a narrow board column, a blocked unit's Delete button overflowed its card.
+
+### Changed
+- The READMEs are now short overviews; the full reference moved to the documentation site.
 
 ## [0.3.0] — 2026-11-21
 
