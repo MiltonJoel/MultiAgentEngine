@@ -15,19 +15,15 @@ and how to run a repository you did not write.
 | `0` | Finished clean. The queue is closed, the gates are green, and the audit found nothing. | `EXIT_CLEAN` |
 | `1` | Did not finish. The pass limit was reached, an agent or a checkpoint failed, the audit keeps finding problems, or the engine stalled. | `EXIT_FAILED` |
 | `2` | Finished, but a person should look. Some units are `BLOCKED`, or no gate ran. | `EXIT_NEEDS_REVIEW` |
-| `2` | A refused start: a bad flag, a busy repository, a plan with nothing left open. | argparse and `parser.error` |
+| `3` | Refused to start: a bad flag or value, a bad config, a missing gate tool, a busy repository or plan, or nothing left open. No agent ran and nothing was spent. | `EXIT_REFUSED` |
 | `130` | Interrupted with Ctrl-C (`SIGINT`). | `EXIT_INTERRUPTED` |
 | `143` | Stopped with `SIGTERM`. | `EXIT_TERMINATED` |
 
-!!! warning "Exit 2 means two things"
-    Code `2` is also what the argument parser exits with. A refused start (a bad flag, a busy repository, a plan
-    with nothing left open, a gate command, agent binding or `llm` setting the engine rejects) exits with `2`
-    before it writes a run log. A run that finished with `2` always writes a `finish` event with
-    `"exit_code": 2`. Check for that event before you treat `2` as "review needed".
-
-A `.mae/config.json` that is not valid JSON, or whose top-level keys have the wrong type (for example
-`"agents"` not an object), is rejected before the gate, agent and `llm` checks run, and exits with `1` and a
-message rather than `2`.
+!!! note "Exit 3 is the only refusal code"
+    Every refusal exits `3`, including the argument parser's usage errors and a `.mae/config.json` that is not valid
+    JSON or has a key of the wrong type (for example `"agents"` not an object). The message is on stderr as
+    `mae: error: <message>`. No log file is written and no branch is created. A run that started never exits `3`,
+    so a script can read `0`, `1` and `2` as the run's own verdict.
 
 ### Telling the codes apart in a script
 
@@ -40,15 +36,11 @@ mae --repo . --log-dir "$logdir" --agent coder=api --agent reviewer=api --agent 
 code=$?
 set -e
 
-finished=$(grep -l '"event": "finish"' "$logdir"/*.jsonl 2>/dev/null | head -1)
-
 case "$code" in
   0)  echo "clean" ;;
-  2)  if [ -n "$finished" ]; then
-        echo "finished, but a person should look: $finished"; exit 1   # or exit 0 to only warn
-      else
-        echo "mae refused to start (see its message above)"; exit 2
-      fi ;;
+  1)  echo "did not finish, see the run log in $logdir"; exit 1 ;;
+  2)  echo "finished, but a person should look, see the run log in $logdir"; exit 1 ;;  # or exit 0 to only warn
+  3)  echo "mae refused to start, nothing ran (see its message above)"; exit 3 ;;
   *)  echo "mae exited with $code"; exit "$code" ;;
 esac
 ```
@@ -168,8 +160,8 @@ Things to get right:
 ### Signals and checkpoints
 
 A checkpoint is a sequence of git commands (`add`, `reset`, `commit`). If `mae` is killed in the middle of one,
-git can leave `index.lock` in the repository's git directory. The next run then refuses to start, with a message
-that the lock exists, until someone deletes it.
+git can leave `index.lock` in the repository's git directory. The next run then refuses to start (exit `3`), with a
+message that the lock exists, until someone deletes it.
 
 So `mae` does not stop in the middle of a checkpoint. When `SIGINT` or `SIGTERM` arrives during one, the engine
 records the signal, lets the git steps finish, and then stops with `130` or `143`. The wait is bounded: each git

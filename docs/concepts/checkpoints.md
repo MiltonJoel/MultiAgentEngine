@@ -136,7 +136,7 @@ would make its commits go wrong. It refuses to start if any of these is true:
 | a `git` command crashed or is still running (`index.lock` exists) | `... exists (a git command crashed or is still running)` |
 
 The refusal is printed as `<repo>: <reason> — finish or abort it first, or run with --no-git`, and it exits with
-code `2`. Finish or abort the operation with `git merge --abort`, `git rebase --abort` or
+code `3` (refused to start). Finish or abort the operation with `git merge --abort`, `git rebase --abort` or
 `git cherry-pick --abort`, then start the run again.
 
 For a stale `index.lock`, first check that no `git` process is running in the repository. Then delete the lock file

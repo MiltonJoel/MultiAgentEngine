@@ -19,6 +19,15 @@ All notable changes to this project are documented here. The format follows
 - Dashboard: on a narrow board column, a blocked unit's Delete button overflowed its card.
 
 ### Changed
+- **Breaking for CI scripts:** every refusal to start now exits **3** (`EXIT_REFUSED`) with a
+  `mae: error: …` message — bad flags or values, a bad `.mae/config.json`, a missing CLI or gate tool, a
+  broken prompt override, a busy repo, a plan held by another run or with nothing left open. Before, these
+  exited 2 (indistinguishable from "finished, needs review") or 1 (indistinguishable from a failed run).
+  Exit 1 now only means a run that started and did not finish; exit 2 only means it finished but needs
+  review. `mae --help` lists the codes. Unreadable config/plan/prompt files, symlink loops, every broken
+  placeholder form and an unusable `--log-dir` are refusals too, with a one-line message instead of a traceback.
+- A failing baseline commit (before any agent) now logs `aborted` and prints a clean message instead of a
+  traceback; a missing gate tool is reported once instead of twice.
 - The READMEs are now short overviews; the full reference moved to the documentation site.
 
 ## [0.3.0] — 2026-11-21

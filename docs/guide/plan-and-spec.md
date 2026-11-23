@@ -107,7 +107,7 @@ The engine reads the block with two regular expressions. These are the rules tha
   open unit between runs, not during one.
 - An empty block is not a finished plan. The engine sees no states, treats the queue as not started,
   and lets the coder write the block from the spec and plan.
-- One run per plan file. A second run on the same plan exits immediately with
+- One run per plan file. A second run on the same plan exits immediately with code `3` and
   `another run already holds <plan> — wait for it or kill it`.
 
 The startup warnings are printed before the first agent starts. During a run, the same problems are

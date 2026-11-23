@@ -195,8 +195,19 @@ def _refusals():
     except SystemExit as exc:
         if exc.code is None or isinstance(exc.code, int):
             raise
-        print(f"mae: error: {exc.code}", file=sys.stderr)
-        raise SystemExit(EXIT_REFUSED) from None
+        reason = str(exc.code)
+    except BrokenPipeError:  # stdout went away (`mae ... | head`): not a reason to call the run refused
+        raise
+    except OSError as exc:  # an unreadable config, plan or prompt; a path that cannot be resolved
+        reason = f"{exc.filename + ': ' if exc.filename else ''}{exc.strerror or exc}"
+    except RuntimeError as exc:
+        if "Symlink loop" not in str(exc):  # Python 3.10's Path.resolve(); any other RuntimeError is a bug
+            raise
+        reason = str(exc)
+    else:
+        return
+    print(f"mae: error: {reason}", file=sys.stderr)
+    raise SystemExit(EXIT_REFUSED) from None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -251,8 +262,8 @@ def main():
 def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
     """Every check that can refuse the run, before any agent starts; returns run()'s arguments."""
     if fcntl is None or os.name != "posix":
-        raise SystemExit("mae runs on Linux and macOS only (it manages process groups and POSIX file locks) "
-                         "— on Windows, run it inside WSL")
+        raise SystemExit("this tool runs on Linux and macOS only (it manages process groups and POSIX file "
+                         "locks) — on Windows, run it inside WSL")
 
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
@@ -265,9 +276,10 @@ def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
 
     configured = args.gate if args.gate is not None else config.get("gates")
     try:
-        gates = _check_gates(parser, build_gates(configured), configured is not None, repo)
+        built = build_gates(configured)
     except SystemExit as exc:
         parser.error(str(exc))
+    gates = _check_gates(parser, built, configured is not None, repo)
     try:
         llm.configure(config.get("llm"))
     except SystemExit as exc:
@@ -289,8 +301,26 @@ def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
     if plan_done(str(plan)):
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
+    _check_log_dir(parser, Path(args.log_dir).expanduser() if args.log_dir else repo / MAE_DIR / "runs")
     return {"spec": spec, "plan": plan, "repo": repo, "allow_dirs": allow_dirs, "agents": agents, "gates": gates,
             "max_iterations": max_iterations}
+
+
+def _check_log_dir(parser: argparse.ArgumentParser, log_dir: Path) -> None:
+    """The run log is the first thing a run writes; a log directory it cannot create is a refusal, not a crash
+    after the branch exists. Checked without creating anything."""
+    path = log_dir.resolve()
+    if path.exists():
+        if not path.is_dir():
+            parser.error(f"--log-dir is not a directory: {path}")
+        if not os.access(path, os.W_OK | os.X_OK):
+            parser.error(f"--log-dir is not writable: {path}")
+        return
+    parent = path.parent
+    while not parent.exists():
+        parent = parent.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        parser.error(f"--log-dir {path} cannot be created: {parent} is not a writable directory")
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
@@ -314,7 +344,13 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
         if branch:
             # commit pre-existing dirty work on its own so every later checkpoint is the coder's alone;
             # a commit that fails here would fail every pass, so stop before paying for one
-            git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run", strict=True)
+            try:
+                git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run", strict=True)
+            except git.CheckpointError as exc:  # before any agent: say why, keep the log honest, spend nothing
+                runlog.log("aborted", error=f"CheckpointError: {exc}", branch=branch, usage=runlog.totals())
+                print(f"\nAborted before any agent ran: {exc}\nThe branch {branch} was created and is empty "
+                      f"— delete it with: git -C {repo} branch -D {branch}", file=sys.stderr)
+                return EXIT_FAILED
             base_sha = git.head(str(repo))
     else:
         print(f"[git] {repo} is not a git repository — running without checkpoints or rollback")

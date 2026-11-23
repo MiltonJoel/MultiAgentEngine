@@ -37,7 +37,7 @@ the file must already exist.
 
 !!! note "One run per plan"
     The engine takes an exclusive advisory lock on the plan file. A second `mae` pointed at the same plan
-    exits at once with `another run already holds <plan> — wait for it or kill it`. The lock is advisory,
+    exits at once with code `3` and `another run already holds <plan> — wait for it or kill it`. The lock is advisory,
     so a human editor is unaffected.
 
 ### Agent bindings
@@ -77,6 +77,7 @@ the run starts; see [Startup checks](#startup-checks).
 | `0` | `EXIT_CLEAN` | Every unit is `DONE`, at least one gate ran and passed, and the audit found nothing. |
 | `1` | `EXIT_FAILED` | The run did not finish: it stopped at the pass ceiling or idle limit before a clean end, an agent or checkpoint failed, or the audit was not clean. |
 | `2` | `EXIT_NEEDS_REVIEW` | The queue is closed and the audit is clean, but a human should look: some units are `BLOCKED`, or no gate ran at all. |
+| `3` | `EXIT_REFUSED` | The run refused to start. No agent ran, no log was written, no branch was created and nothing was spent. The message on stderr says why. |
 | `130` | `EXIT_INTERRUPTED` | Interrupted with Ctrl-C (`SIGINT`). |
 | `143` | `EXIT_TERMINATED` | Stopped with `SIGTERM` (`docker stop`, systemd, a cancelled CI job). |
 
@@ -84,13 +85,21 @@ A run is "finished" only when the tester passed, the auditor was clean and the p
 `BLOCKED` counts as closed for that test, but it adds the caveat `BLOCKED: <units>` and turns the exit code
 into `2`. So does a run in which the gate list was empty: `no gate ran — green checked nothing`.
 
-!!! note "Code 2 is also a refused start"
-    Every startup check that calls `parser.error(...)` (an unknown role or runner, a missing gate tool, a
-    bad `--max-iterations`, an `--allow-dir` that is not a directory, a repo mid-merge or mid-rebase, a
-    plan with nothing open, …) exits with code `2` too, since that is what `argparse` itself returns for a
-    refused start — before any agent ran, so it means something different from `EXIT_NEEDS_REVIEW`. A
-    smaller set of earlier failures (an unsupported platform, an unreadable `.mae/config.json`, another run
-    already holding the plan) exit with code `1` instead.
+!!! note "Every refusal exits 3"
+    Anything that stops `mae` before the first agent starts exits with `3`, and prints `mae: error: <message>`
+    on stderr. That covers bad arguments (an unknown flag, a bad value, an unknown role or runner, a missing
+    gate tool, a bad `--max-iterations`, an `--allow-dir` that is not a directory, a repo mid-merge or
+    mid-rebase, a plan with nothing open, a `--log-dir` that cannot be created, …), an invalid, ill-typed or
+    unreadable `.mae/config.json`, an unreadable plan or prompt override, a broken prompt placeholder, a
+    symlink loop in a path, an unwritable plan, a plan another run already holds, and running on Windows. No
+    log file is written, no branch is created and nothing is spent. `--help` and `--version` exit `0`.
+
+    One failure happens after the branch exists but still before any agent: the baseline commit of your
+    uncommitted work (a failing pre-commit hook, missing git identity, signing). It exits `1`, logs an
+    `aborted` event, and prints the command to delete the empty branch.
+
+    Exit `1` only ever means a run that started and did not finish, and `2` only means a finished run that
+    needs review.
 
 On Ctrl-C or `SIGTERM` the engine kills the agent's process group, logs `aborted`, keeps the checkpoints and
 exits with the matching code. A signal that arrives during a git checkpoint waits for the checkpoint to
@@ -98,7 +107,8 @@ finish (each git call is bounded by its 300-second timeout), so it does not leav
 
 ### Startup checks
 
-`main()` validates the whole run before the first agent is called. In order:
+`main()` validates the whole run before the first agent is called. In order. Any failure in these checks exits
+with `3` (refused to start), and none of them starts a run:
 
 1. **Platform** — Linux or macOS only. On Windows it exits with `mae runs on Linux and macOS only (it
    manages process groups and POSIX file locks) — on Windows, run it inside WSL`.

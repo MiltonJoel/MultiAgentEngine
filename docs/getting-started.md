@@ -198,7 +198,8 @@ git -C ~/code/myproject diff <base>                 # everything the run changed
 
 Merge the branch if you like the result, or `git reset --hard <sha>` to any pass if you do not.
 The exit code tells you how the run ended: `0` clean, `1` did not finish, `2` finished but needs a
-human look (there are `BLOCKED` units, or no gate ran). See [Command line](reference/cli.md).
+human look (there are `BLOCKED` units, or no gate ran), `3` refused to start, so nothing ran and the message
+says why. See [Command line](reference/cli.md).
 
 ## Ask for more
 

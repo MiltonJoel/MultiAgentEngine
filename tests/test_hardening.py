@@ -774,6 +774,72 @@ def test_a_plan_held_by_another_run_is_a_refusal(project, monkeypatch, capsys):
     assert "another run already holds" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable files")
+def test_unreadable_files_and_symlink_loops_are_refusals_not_tracebacks(project, monkeypatch, capsys):
+    mae_dir = project / ".mae"
+    for name in ("config.json", "plan.md"):
+        target = mae_dir / name
+        if not target.exists():
+            target.write_text("{}")
+        target.chmod(0)
+        try:
+            assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, name
+        finally:
+            target.chmod(0o644)
+        (mae_dir / "config.json").unlink(missing_ok=True)
+    (project / "loop.md").symlink_to(project / "loop.md")
+    assert _main(monkeypatch, "--repo", str(project), "--spec", str(project / "loop.md")) == main.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("mae: error:") == 3
+
+
+def test_a_bad_log_dir_is_refused_before_anything_is_created(project, monkeypatch, capsys):
+    blocker = project / "not-a-dir"
+    blocker.write_text("x")
+    for bad in (blocker, blocker / "logs"):
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir", str(bad)) == main.EXIT_REFUSED
+    assert "--log-dir" in capsys.readouterr().err
+    assert git._git(str(project), "branch", "--list", "engine/*")[1] == ""  # no branch was made
+
+
+def test_every_broken_placeholder_form_is_a_refusal(project, monkeypatch):
+    (project / ".mae" / "prompts").mkdir()
+    for template in ("{nope}", "{0}", "{errors.foo}", "{errors[0]}", "{spec!z}", "{"):
+        (project / ".mae" / "prompts" / "coder.md").write_text(template)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, template
+
+
+def test_a_missing_gate_tool_is_reported_once(project, monkeypatch, capsys):
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "definitely-not-a-tool-xyz") == main.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert err.count("mae: error:") == 1 and "gate tool not found" in err
+
+
+def test_a_failure_inside_the_run_is_never_a_refusal(project, monkeypatch, capsys):
+    """Only startup refuses; a SystemExit("message") raised once the run is going is a failed run (1)."""
+    class Graph:
+        def invoke(self, *a, **kw):  # e.g. a prompt override that only breaks when the auditor's turn comes
+            raise SystemExit("boom mid-run")
+
+    monkeypatch.setattr(main, "build_graph", Graph)
+    with pytest.raises(SystemExit) as exc:
+        monkeypatch.setattr(sys, "argv", ["mae", "--repo", str(project), "--gate", "true"])
+        main.main()
+    assert exc.value.code == "boom mid-run"  # Python prints it and exits 1 — not converted to 3
+    assert '"event": "aborted"' in next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+
+
+def test_a_failing_baseline_commit_aborts_cleanly_before_any_agent(project, monkeypatch, capsys):
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    (project / "dirty.py").write_text("x = 1\n")  # uncommitted work, so the baseline has something to commit
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "Aborted before any agent ran" in err and "Traceback" not in err
+    assert '"event": "aborted"' in next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+
+
 def test_help_and_version_still_exit_0(monkeypatch, capsys):
     assert _main(monkeypatch, "--version") == 0
     assert _main(monkeypatch, "--help") == 0
