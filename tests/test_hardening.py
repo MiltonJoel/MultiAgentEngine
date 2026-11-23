@@ -735,15 +735,49 @@ def test_a_full_run_without_git(project, monkeypatch, capsys):
 
 
 def test_startup_refusals_name_the_problem(project, monkeypatch, capsys):
-    assert _main(monkeypatch, "--repo", str(project / "nope")) == 2
-    assert _main(monkeypatch, "--repo", str(project), "--spec", ".mae/plan.md") == 2
-    assert _main(monkeypatch, "--repo", str(project), "--agent", "coder") == 2
-    assert _main(monkeypatch, "--repo", str(project), "--allow-dir", str(project / "missing")) == 2
-    assert _main(monkeypatch, "--repo", str(project), "--gate", "'unterminated") == 2
+    refused = main.EXIT_REFUSED
+    assert _main(monkeypatch, "--repo", str(project / "nope")) == refused
+    assert _main(monkeypatch, "--repo", str(project), "--spec", ".mae/plan.md") == refused
+    assert _main(monkeypatch, "--repo", str(project), "--agent", "coder") == refused
+    assert _main(monkeypatch, "--repo", str(project), "--allow-dir", str(project / "missing")) == refused
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "'unterminated") == refused
     (project / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: DONE\n-->\n")
-    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == 2
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == refused
     err = capsys.readouterr().err
     assert "not a directory" in err and "different files" in err and "nothing left open" in err
+
+
+def test_every_refusal_to_start_exits_3_never_a_verdict_code(project, monkeypatch, capsys):
+    """CI must tell "the run never started" from "the run failed" (1) and "needs review" (2)."""
+    assert main.EXIT_REFUSED not in (main.EXIT_CLEAN, main.EXIT_FAILED, main.EXIT_NEEDS_REVIEW)
+    assert _main(monkeypatch, "--no-such-flag") == main.EXIT_REFUSED  # argparse's own usage error, normally 2
+    assert _main(monkeypatch, "--max-iterations", "many") == main.EXIT_REFUSED
+    config = project / ".mae" / "config.json"
+    for broken in ("{not json", "[1]", '{"agents": "claude"}'):  # these used to exit 1, like a failed run
+        config.write_text(broken)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, broken
+    config.unlink()
+    (project / ".mae" / "prompts").mkdir()
+    (project / ".mae" / "prompts" / "coder.md").write_text("{nope}")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED
+    (project / ".mae" / "prompts" / "coder.md").unlink()
+    err = capsys.readouterr().err
+    assert "mae: error:" in err and "config.json" in err and "bad placeholder" in err
+    assert not (project / ".mae" / "runs").exists()  # nothing started: no log, no branch, nothing spent
+
+
+def test_a_plan_held_by_another_run_is_a_refusal(project, monkeypatch, capsys):
+    import fcntl
+    with (project / ".mae" / "plan.md").open("r+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED
+    assert "another run already holds" in capsys.readouterr().err
+
+
+def test_help_and_version_still_exit_0(monkeypatch, capsys):
+    assert _main(monkeypatch, "--version") == 0
+    assert _main(monkeypatch, "--help") == 0
+    assert "3 refused to start" in capsys.readouterr().out
 
 
 def test_an_agent_failure_aborts_with_exit_1_and_logs_it(project, monkeypatch, tmp_path):

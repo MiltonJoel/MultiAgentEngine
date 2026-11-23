@@ -5,7 +5,7 @@ import os
 import shutil
 import signal
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -34,8 +34,10 @@ CONFIG = f"{MAE_DIR}/config.json"
 DEFAULT_SPEC = "spec.md"
 DEFAULT_PLAN = "plan.md"
 # Exit codes, usable from CI. NEEDS_REVIEW: the queue closed green and audited, but a human still has to
-# look — some units are BLOCKED, or no gate ran so "green" checked nothing.
-EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW = 0, 1, 2
+# look — some units are BLOCKED, or no gate ran so "green" checked nothing. REFUSED: the run never started
+# (bad arguments or config, a missing tool, a busy repo or plan, nothing left open) — no agent ran, nothing
+# was spent, nothing changed; its own code so CI never mistakes it for a run's verdict.
+EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW, EXIT_REFUSED = 0, 1, 2, 3
 EXIT_INTERRUPTED, EXIT_TERMINATED = 130, 143  # 128 + SIGINT / SIGTERM, as a shell reports them
 
 NEW_PLAN = """<!-- ENGINE-STATUS
@@ -176,8 +178,31 @@ def _on_sigterm(signum, frame):
     raise Terminated()
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would read as EXIT_NEEDS_REVIEW; every refusal exits 3."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_REFUSED, f"{self.prog}: error: {message}\n")
+
+
+@contextmanager
+def _refusals():
+    """A SystemExit carrying a message (bad config, locked plan, broken prompt override…) raised before the run
+    starts is a refusal: print it like a usage error and exit EXIT_REFUSED. Numeric exits pass through."""
+    try:
+        yield
+    except SystemExit as exc:
+        if exc.code is None or isinstance(exc.code, int):
+            raise
+        print(f"mae: error: {exc.code}", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mae", description="AI software engineering loop")
+    parser = _Parser(prog="mae", description="AI software engineering loop",
+                     epilog="Exit codes: 0 clean, 1 failed, 2 needs review, 3 refused to start, "
+                            "130 interrupted, 143 terminated.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--spec", metavar="FILE",
                         help=f"Architecture doc, never edited by the engine (default: <repo>/{MAE_DIR}/{DEFAULT_SPEC})")
@@ -208,6 +233,23 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    with _refusals():
+        prepared = _prepare(parser, args)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        with ExitStack() as stack:
+            with _refusals():  # another run holding the plan is a refusal; failing inside the run is not
+                stack.enter_context(_plan_lock(prepared["plan"]))
+            code = run(**prepared, log_dir=args.log_dir, no_git=args.no_git)
+    except Terminated:
+        sys.exit(EXIT_TERMINATED)
+    except KeyboardInterrupt:
+        sys.exit(EXIT_INTERRUPTED)
+    sys.exit(code)
+
+
+def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
+    """Every check that can refuse the run, before any agent starts; returns run()'s arguments."""
     if fcntl is None or os.name != "posix":
         raise SystemExit("mae runs on Linux and macOS only (it manages process groups and POSIX file locks) "
                          "— on Windows, run it inside WSL")
@@ -247,16 +289,8 @@ def main():
     if plan_done(str(plan)):
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
-
-    signal.signal(signal.SIGTERM, _on_sigterm)
-    try:
-        with _plan_lock(plan):
-            code = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
-    except Terminated:
-        sys.exit(EXIT_TERMINATED)
-    except KeyboardInterrupt:
-        sys.exit(EXIT_INTERRUPTED)
-    sys.exit(code)
+    return {"spec": spec, "plan": plan, "repo": repo, "allow_dirs": allow_dirs, "agents": agents, "gates": gates,
+            "max_iterations": max_iterations}
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
