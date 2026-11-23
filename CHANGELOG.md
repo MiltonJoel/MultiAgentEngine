@@ -28,6 +28,8 @@ All notable changes to this project are documented here. The format follows
   placeholder form and an unusable `--log-dir` are refusals too, with a one-line message instead of a traceback.
 - A failing baseline commit (before any agent) now logs `aborted` and prints a clean message instead of a
   traceback; a missing gate tool is reported once instead of twice.
+- `--log-dir=~/x` wrote to a literal `./~/x` directory (the shell does not expand `~` after `=`); the path is now
+  expanded once and the directory checked is the one written.
 - The READMEs are now short overviews; the full reference moved to the documentation site.
 
 ## [0.3.0] — 2026-11-21

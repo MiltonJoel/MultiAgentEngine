@@ -188,8 +188,10 @@ class _Parser(argparse.ArgumentParser):
 
 @contextmanager
 def _refusals():
-    """A SystemExit carrying a message (bad config, locked plan, broken prompt override…) raised before the run
-    starts is a refusal: print it like a usage error and exit EXIT_REFUSED. Numeric exits pass through."""
+    """Anything that stops the run before it starts is a refusal: print it like a usage error and exit
+    EXIT_REFUSED. That is a SystemExit carrying a message (bad config, locked plan, broken prompt override…), an
+    OSError from reading the config/plan/prompts or resolving a path, and Python 3.10's symlink-loop
+    RuntimeError. Numeric exits (usage errors, --help) and a broken stdout pipe pass through untouched."""
     try:
         yield
     except SystemExit as exc:
@@ -251,7 +253,7 @@ def main():
         with ExitStack() as stack:
             with _refusals():  # another run holding the plan is a refusal; failing inside the run is not
                 stack.enter_context(_plan_lock(prepared["plan"]))
-            code = run(**prepared, log_dir=args.log_dir, no_git=args.no_git)
+            code = run(**prepared, no_git=args.no_git)
     except Terminated:
         sys.exit(EXIT_TERMINATED)
     except KeyboardInterrupt:
@@ -301,15 +303,18 @@ def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
     if plan_done(str(plan)):
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
-    _check_log_dir(parser, Path(args.log_dir).expanduser() if args.log_dir else repo / MAE_DIR / "runs")
+    # expanded once, here: `--log-dir=~/x` reaches us with a literal ~ (the shell only expands a leading one),
+    # and the directory checked must be the directory written
+    log_dir = Path(args.log_dir).expanduser().resolve() if args.log_dir else repo / MAE_DIR / "runs"
+    _check_log_dir(parser, log_dir)
     return {"spec": spec, "plan": plan, "repo": repo, "allow_dirs": allow_dirs, "agents": agents, "gates": gates,
-            "max_iterations": max_iterations}
+            "max_iterations": max_iterations, "log_dir": str(log_dir)}
 
 
 def _check_log_dir(parser: argparse.ArgumentParser, log_dir: Path) -> None:
     """The run log is the first thing a run writes; a log directory it cannot create is a refusal, not a crash
     after the branch exists. Checked without creating anything."""
-    path = log_dir.resolve()
+    path = log_dir.resolve()  # a dangling symlink resolves to its target, which the run then creates
     if path.exists():
         if not path.is_dir():
             parser.error(f"--log-dir is not a directory: {path}")
@@ -317,10 +322,12 @@ def _check_log_dir(parser: argparse.ArgumentParser, log_dir: Path) -> None:
             parser.error(f"--log-dir is not writable: {path}")
         return
     parent = path.parent
-    while not parent.exists():
+    while not os.path.lexists(parent):
         parent = parent.parent
-    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
-        parser.error(f"--log-dir {path} cannot be created: {parent} is not a writable directory")
+    if not parent.is_dir():
+        parser.error(f"--log-dir {path} cannot be created: {parent} is a file, not a directory")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        parser.error(f"--log-dir {path} cannot be created: {parent} is not writable")
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],

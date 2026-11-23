@@ -798,8 +798,25 @@ def test_a_bad_log_dir_is_refused_before_anything_is_created(project, monkeypatc
     blocker.write_text("x")
     for bad in (blocker, blocker / "logs"):
         assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir", str(bad)) == main.EXIT_REFUSED
-    assert "--log-dir" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "is a file, not a directory" in err and "Traceback" not in err
     assert git._git(str(project), "branch", "--list", "engine/*")[1] == ""  # no branch was made
+
+
+def test_a_dangling_symlink_log_dir_creates_its_target_instead_of_crashing(project, monkeypatch, tmp_path):
+    (tmp_path / "logs-link").symlink_to(tmp_path / "logs-target")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir", str(tmp_path / "logs-link")) \
+        == main.EXIT_CLEAN
+    assert list((tmp_path / "logs-target").glob("*.jsonl"))
+
+
+def test_a_tilde_log_dir_is_the_directory_that_gets_written(project, monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir=~/mae-logs") == main.EXIT_CLEAN
+    assert list((home / "mae-logs").glob("*.jsonl"))  # under $HOME, as checked
+    assert not (project / "~").exists()  # not a literal "~" directory in the working directory
 
 
 def test_every_broken_placeholder_form_is_a_refusal(project, monkeypatch):
