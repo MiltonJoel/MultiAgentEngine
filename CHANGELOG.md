@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Documentation site (`docs/`, built with Zensical, published to GitHub Pages by
+  `.github/workflows/docs.yml`): getting started, guides, concepts, CLI/config/run-log/runner reference,
+  security, troubleshooting, with dashboard screenshots. CI builds it in strict mode on every pull request.
+- English README (`README.en.md`), with language links between both versions.
+
+### Fixed
+- `test_documents_live_in_the_target_repo_not_in_the_package` failed on macOS, where the temp directory
+  sits behind a symlink (`/var` → `/private/var`); the macOS CI job was red because of it.
+- README: the troubleshooting table quoted the old wording of the unreadable-status-line warning.
+- Dashboard: on a narrow board column, a blocked unit's Delete button overflowed its card.
+
+### Changed
+- **Breaking for CI scripts:** every refusal to start now exits **3** (`EXIT_REFUSED`) with a
+  `mae: error: …` message — bad flags or values, a bad `.mae/config.json`, a missing CLI or gate tool, a
+  broken prompt override, a busy repo, a plan held by another run or with nothing left open. Before, these
+  exited 2 (indistinguishable from "finished, needs review") or 1 (indistinguishable from a failed run).
+  Exit 1 now only means a run that started and did not finish; exit 2 only means it finished but needs
+  review. `mae --help` lists the codes. Unreadable config/plan/prompt files, symlink loops, every broken
+  placeholder form and an unusable `--log-dir` are refusals too, with a one-line message instead of a traceback.
+- A failing baseline commit (before any agent) now logs `aborted` and prints a clean message instead of a
+  traceback; a missing gate tool is reported once instead of twice.
+- `--log-dir=~/x` wrote to a literal `./~/x` directory (the shell does not expand `~` after `=`); the path is now
+  expanded once and the directory checked is the one written.
+- The READMEs are now short overviews; the full reference moved to the documentation site.
+
 ## [0.3.0] — 2026-11-21
 
 ### Security

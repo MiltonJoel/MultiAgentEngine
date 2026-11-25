@@ -735,15 +735,132 @@ def test_a_full_run_without_git(project, monkeypatch, capsys):
 
 
 def test_startup_refusals_name_the_problem(project, monkeypatch, capsys):
-    assert _main(monkeypatch, "--repo", str(project / "nope")) == 2
-    assert _main(monkeypatch, "--repo", str(project), "--spec", ".mae/plan.md") == 2
-    assert _main(monkeypatch, "--repo", str(project), "--agent", "coder") == 2
-    assert _main(monkeypatch, "--repo", str(project), "--allow-dir", str(project / "missing")) == 2
-    assert _main(monkeypatch, "--repo", str(project), "--gate", "'unterminated") == 2
+    refused = main.EXIT_REFUSED
+    assert _main(monkeypatch, "--repo", str(project / "nope")) == refused
+    assert _main(monkeypatch, "--repo", str(project), "--spec", ".mae/plan.md") == refused
+    assert _main(monkeypatch, "--repo", str(project), "--agent", "coder") == refused
+    assert _main(monkeypatch, "--repo", str(project), "--allow-dir", str(project / "missing")) == refused
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "'unterminated") == refused
     (project / ".mae" / "plan.md").write_text("<!-- ENGINE-STATUS\nLogin: DONE\n-->\n")
-    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == 2
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == refused
     err = capsys.readouterr().err
     assert "not a directory" in err and "different files" in err and "nothing left open" in err
+
+
+def test_every_refusal_to_start_exits_3_never_a_verdict_code(project, monkeypatch, capsys):
+    """CI must tell "the run never started" from "the run failed" (1) and "needs review" (2)."""
+    assert main.EXIT_REFUSED not in (main.EXIT_CLEAN, main.EXIT_FAILED, main.EXIT_NEEDS_REVIEW)
+    assert _main(monkeypatch, "--no-such-flag") == main.EXIT_REFUSED  # argparse's own usage error, normally 2
+    assert _main(monkeypatch, "--max-iterations", "many") == main.EXIT_REFUSED
+    config = project / ".mae" / "config.json"
+    for broken in ("{not json", "[1]", '{"agents": "claude"}'):  # these used to exit 1, like a failed run
+        config.write_text(broken)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, broken
+    config.unlink()
+    (project / ".mae" / "prompts").mkdir()
+    (project / ".mae" / "prompts" / "coder.md").write_text("{nope}")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED
+    (project / ".mae" / "prompts" / "coder.md").unlink()
+    err = capsys.readouterr().err
+    assert "mae: error:" in err and "config.json" in err and "bad placeholder" in err
+    assert not (project / ".mae" / "runs").exists()  # nothing started: no log, no branch, nothing spent
+
+
+def test_a_plan_held_by_another_run_is_a_refusal(project, monkeypatch, capsys):
+    import fcntl
+    with (project / ".mae" / "plan.md").open("r+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED
+    assert "another run already holds" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable files")
+def test_unreadable_files_and_symlink_loops_are_refusals_not_tracebacks(project, monkeypatch, capsys):
+    mae_dir = project / ".mae"
+    for name in ("config.json", "plan.md"):
+        target = mae_dir / name
+        if not target.exists():
+            target.write_text("{}")
+        target.chmod(0)
+        try:
+            assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, name
+        finally:
+            target.chmod(0o644)
+        (mae_dir / "config.json").unlink(missing_ok=True)
+    (project / "loop.md").symlink_to(project / "loop.md")
+    assert _main(monkeypatch, "--repo", str(project), "--spec", str(project / "loop.md")) == main.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("mae: error:") == 3
+
+
+def test_a_bad_log_dir_is_refused_before_anything_is_created(project, monkeypatch, capsys):
+    blocker = project / "not-a-dir"
+    blocker.write_text("x")
+    for bad in (blocker, blocker / "logs"):
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir", str(bad)) == main.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "is a file, not a directory" in err and "Traceback" not in err
+    assert git._git(str(project), "branch", "--list", "engine/*")[1] == ""  # no branch was made
+
+
+def test_a_dangling_symlink_log_dir_creates_its_target_instead_of_crashing(project, monkeypatch, tmp_path):
+    (tmp_path / "logs-link").symlink_to(tmp_path / "logs-target")
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir", str(tmp_path / "logs-link")) \
+        == main.EXIT_CLEAN
+    assert list((tmp_path / "logs-target").glob("*.jsonl"))
+
+
+def test_a_tilde_log_dir_is_the_directory_that_gets_written(project, monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true", "--log-dir=~/mae-logs") == main.EXIT_CLEAN
+    assert list((home / "mae-logs").glob("*.jsonl"))  # under $HOME, as checked
+    assert not (project / "~").exists()  # not a literal "~" directory in the working directory
+
+
+def test_every_broken_placeholder_form_is_a_refusal(project, monkeypatch):
+    (project / ".mae" / "prompts").mkdir()
+    for template in ("{nope}", "{0}", "{errors.foo}", "{errors[0]}", "{spec!z}", "{"):
+        (project / ".mae" / "prompts" / "coder.md").write_text(template)
+        assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_REFUSED, template
+
+
+def test_a_missing_gate_tool_is_reported_once(project, monkeypatch, capsys):
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "definitely-not-a-tool-xyz") == main.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert err.count("mae: error:") == 1 and "gate tool not found" in err
+
+
+def test_a_failure_inside_the_run_is_never_a_refusal(project, monkeypatch, capsys):
+    """Only startup refuses; a SystemExit("message") raised once the run is going is a failed run (1)."""
+    class Graph:
+        def invoke(self, *a, **kw):  # e.g. a prompt override that only breaks when the auditor's turn comes
+            raise SystemExit("boom mid-run")
+
+    monkeypatch.setattr(main, "build_graph", Graph)
+    with pytest.raises(SystemExit) as exc:
+        monkeypatch.setattr(sys, "argv", ["mae", "--repo", str(project), "--gate", "true"])
+        main.main()
+    assert exc.value.code == "boom mid-run"  # Python prints it and exits 1 — not converted to 3
+    assert '"event": "aborted"' in next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+
+
+def test_a_failing_baseline_commit_aborts_cleanly_before_any_agent(project, monkeypatch, capsys):
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    (project / "dirty.py").write_text("x = 1\n")  # uncommitted work, so the baseline has something to commit
+    assert _main(monkeypatch, "--repo", str(project), "--gate", "true") == main.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "Aborted before any agent ran" in err and "Traceback" not in err
+    assert '"event": "aborted"' in next((project / ".mae" / "runs").glob("*.jsonl")).read_text()
+
+
+def test_help_and_version_still_exit_0(monkeypatch, capsys):
+    assert _main(monkeypatch, "--version") == 0
+    assert _main(monkeypatch, "--help") == 0
+    assert "3 refused to start" in capsys.readouterr().out
 
 
 def test_an_agent_failure_aborts_with_exit_1_and_logs_it(project, monkeypatch, tmp_path):

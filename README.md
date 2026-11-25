@@ -5,62 +5,47 @@
 **Un bucle de agentes de programación que implementa, prueba y audita tu especificación hasta terminarla.**
 
 [![ci](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml/badge.svg)](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/tests.yml)
+[![docs](https://github.com/MiltonJoel/MultiAgentEngine/actions/workflows/docs.yml/badge.svg)](https://miltonjoel.github.io/MultiAgentEngine/)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
 ![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey)
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-green)](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/LICENSE)
+
+**[Documentación (en inglés)](https://miltonjoel.github.io/MultiAgentEngine/)** · [English](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/README.en.md) · **Español**
 
 </div>
 
 MultiAgentEngine (`mae`) es un orquestador sobre [LangGraph](https://github.com/langchain-ai/langgraph)
-que dirige agentes de programación — la CLI `claude`, la CLI `codex` o un **modelo gratuito**
-(local con Ollama, o cualquier API compatible con OpenAI) — contra un repositorio hasta que una
-especificación de arquitectura queda implementada, testeada y auditada.
+que dirige agentes de programación — la CLI `claude`, la CLI `codex` o un **modelo gratuito** (local con
+Ollama, o cualquier API compatible con OpenAI) — contra un repositorio hasta que una especificación de
+arquitectura queda implementada, testeada y auditada.
 
-Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, valida cada
-pasada con gates deterministas (tests, lint), mantiene la cola al día, guarda un checkpoint de git
-por pasada y se detiene cuando no queda nada abierto y la auditoría sale limpia.
+Tú escribes la especificación y la cola de trabajo. El motor ejecuta los agentes, valida cada pasada con
+gates deterministas (tests, lint), mantiene la cola al día, guarda un checkpoint de git por pasada y se
+detiene cuando no queda nada abierto y la auditoría sale limpia.
 
-**No necesitas ninguna suscripción de pago:** con `mae --free` los tres roles usan un modelo local
-a través de [Ollama](https://ollama.com) — sin cuenta, sin clave, sin coste.
+**No necesitas ninguna suscripción de pago:** con `mae --free` los tres roles usan un modelo local a
+través de [Ollama](https://ollama.com) — sin cuenta, sin clave, sin coste.
+
+![El panel mae-ui](https://raw.githubusercontent.com/MiltonJoel/MultiAgentEngine/master/docs/assets/dashboard-run.png)
 
 ## Características
 
-- **Bucle evaluador-optimizador** — coder → tester → revisor (si falla) o auditor (si pasa) → coder,
-  hasta cerrar la cola. El auditor reabre las unidades `DONE` que no cumplen la especificación.
-- **Gates deterministas** — pytest y ruff por defecto, o cualquier comando (`npm test`, `tsc`,
-  `eslint`, `go vet`…); su salida se convierte en errores estructurados `archivo:línea`.
-- **Cualquier modelo en cualquier rol** — `claude`, `codex`, Ollama o una API compatible con
-  OpenAI; mézclalos por rol.
-- **Seguro por diseño** — una rama y un commit por pasada (rollback a cualquier punto), secretos
-  excluidos de los commits, herramientas de archivos confinadas al repo, claves de API protegidas,
-  `SIGTERM`/Ctrl-C limpios. Ver [SECURITY.md](SECURITY.md).
-- **Observable** — log JSONL por ejecución con tiempos, tokens y coste; códigos de salida
-  pensados para CI.
-- **Panel web local** (`mae-ui`) — editar la cola y la especificación, lanzar y detener
-  ejecuciones, verlas en vivo y revisar el historial con sus diffs.
-- **Sin dependencias pesadas** — biblioteca estándar más LangGraph; sin framework web ni build de
-  front-end.
+- **Bucle evaluador-optimizador** — coder → tester → revisor (si falla) o auditor (si pasa) → coder, hasta
+  cerrar la cola. El auditor reabre las unidades `DONE` que no cumplen la especificación.
+- **Gates deterministas** — pytest y ruff por defecto, o cualquier comando (`npm test`, `tsc`, `eslint`,
+  `go vet`…).
+- **Cualquier modelo en cualquier rol** — `claude`, `codex`, Ollama o una API compatible con OpenAI;
+  mézclalos por rol.
+- **Seguro por diseño** — una rama y un commit por pasada, secretos fuera de los commits, herramientas de
+  archivos confinadas al repo, claves de API protegidas, `SIGTERM`/Ctrl-C limpios.
+- **Observable** — log JSONL por ejecución con tiempos, tokens y coste; códigos de salida pensados para CI.
+- **Panel web local** (`mae-ui`) — editar la cola y la especificación, lanzar y detener ejecuciones, verlas
+  en vivo.
 
-## Contenido
+## Inicio rápido
 
-- [Ejemplo de uso](#ejemplo-de-uso)
-- [Inicio rápido](#inicio-rápido)
-- [Interfaz web — `mae-ui`](#interfaz-web--mae-ui)
-- [Los dos archivos que son tuyos](#los-dos-archivos-que-son-tuyos)
-- [Flags y códigos de salida](#flags-y-códigos-de-salida)
-- [Ajustes por repo — `.mae/config.json`](#ajustes-por-repo--maeconfigjson)
-- [El bucle](#el-bucle)
-- [Modelos gratuitos — sin suscripción](#modelos-gratuitos--sin-suscripción)
-- [Roles, CLIs y prompts](#roles-clis-y-prompts)
-- [Checkpoints](#checkpoints) · [El log de ejecución](#el-log-de-ejecución) · [Coste y límites](#coste-y-límites)
-- [Solución de problemas](#solución-de-problemas) · [Buenas prácticas](#buenas-prácticas)
-- [Seguridad](#seguridad) · [Desarrollo](#desarrollo) · [Licencia](#licencia)
-
----
-
-## Ejemplo de uso
-
-Una sesión completa, de cero a una rama con el trabajo hecho. Copia y pega:
+Python 3.10+ en Linux o macOS (en Windows, dentro de WSL), y al menos un proveedor de modelo: Ollama con
+un modelo descargado, un endpoint compatible con OpenAI, o las CLIs `claude` / `codex` con sesión iniciada.
 
 ```bash
 # 1. Instalar el motor (una sola vez)
@@ -83,717 +68,54 @@ Rate limiting: TODO
 -->
 EOF
 
-# 3. Ejecutar
+# 3. Ejecutar (añade --free para usar un modelo local de Ollama en todos los roles)
 mae
 
-# 4. Revisar el resultado (el comando exacto se imprime al final)
-git log --oneline --all --graph | head -20
+# 4. Revisa el resultado en su rama — el comando exacto se imprime al final
 ```
 
-Variantes habituales:
-
-```bash
-mae --repo ~/code/myproject                              # desde cualquier carpeta
-mae --free                                               # todo gratis, con un modelo local (Ollama)
-mae --agent reviewer=claude --agent auditor=claude       # solo claude, sin codex
-mae --gate "npm test" --gate "eslint . -f json"          # proyecto JavaScript
-mae --gate ''                                            # sin tests ni lint
-mae --allow-dir ~/code/reference-lib                     # el coder puede leer otro repo
-mae --max-iterations 30                                  # plan con muchas unidades
-mae --spec docs/arquitectura.md --plan docs/cola.md      # documentos fuera de .mae/
-mae --no-git                                             # sin rama ni commits
-```
-
-Para pedir más trabajo después, añade o reabre una línea en `.mae/plan.md` y vuelve a
-ejecutar `mae`:
-
-```bash
-sed -i.bak 's/^Rate limiting: DONE/Rate limiting: TODO — por usuario, no por IP/' .mae/plan.md && rm .mae/plan.md.bak
-mae
-```
-
----
-
-## Inicio rápido
-
-### 1. Instalar una vez
-
-Necesitas Python 3.10 o superior en **Linux o macOS** (en Windows, dentro de
-[WSL](https://learn.microsoft.com/windows/wsl/)). No hace falta nada más del equipo de quien escribió
-el motor: todo lo que usa está en este repositorio.
-
-Solo para usarlo (deja `mae` y `mae-ui` en el `PATH`):
-
-```bash
-pipx install git+https://github.com/MiltonJoel/MultiAgentEngine.git
-```
-
-Para modificarlo, clónalo en cualquier carpeta y usa un entorno virtual:
-
-```bash
-git clone https://github.com/MiltonJoel/MultiAgentEngine.git
-cd MultiAgentEngine
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"                               # el motor + pytest, ruff, mypy, build
-python -m pytest -q                                   # debería pasar todo
-```
-
-Si `pip install` falla al descargar `setuptools` (sin red o detrás de un proxy), instala
-`setuptools` en el entorno y repite con `pip install -e . --no-build-isolation`. Con
-acceso normal a PyPI no hace falta.
-
-Comprueba las herramientas que usa:
-
-```bash
-which mae pytest ruff git
-which ollama              # opción gratuita
-which claude codex        # opción de pago (suscripción o clave)
-```
-
-Necesitas **al menos un** proveedor de modelo. Cualquiera de estos sirve para cualquier
-rol, y puedes mezclarlos:
-
-| Herramienta | Rol | Notas |
-|---|---|---|
-| [Ollama](https://ollama.com) con un modelo descargado | cualquiera (`--free` los usa para todos) | **gratis**, local, sin cuenta ni clave: `ollama pull qwen2.5-coder:7b` |
-| Un endpoint compatible con OpenAI con plan gratuito | cualquiera (runner `api`) | p. ej. OpenRouter (modelos `:free`), Groq, Google AI Studio; clave en `MAE_API_KEY` |
-| CLI `claude`, con sesión iniciada | el programador (coder) por defecto | de pago; en el `PATH`, ya autenticada |
-| CLI `codex`, con sesión iniciada | revisor y auditor por defecto | de pago; en el `PATH`, ya autenticada — o asigna esos roles a otro |
-| `pytest` | gate de tests por defecto | se ejecuta dentro del repo **objetivo**; cámbialo con `--gate` |
-| `ruff` | gate de lint por defecto | se omite si no está instalado. **No uses la versión de snap** — ver [Solución de problemas](#solución-de-problemas) |
-| `git` | checkpoints en el repo objetivo | opcional — sin él no hay punto de restauración |
-
-Con Ollama o las CLIs no se configura ninguna clave de API. Solo el runner `api` usa una,
-y la lee de una variable de entorno, nunca de un archivo del repo.
-
-### 2. Pon dos archivos en el repo que quieres construir
-
-```bash
-cd ~/code/myproject
-mkdir -p .mae
-echo ".mae/runs/" >> .gitignore
-```
-
-**`.mae/spec.md`** — lo que el sistema debe ser. Cualquier formato, prosa incluida. El
-motor nunca lo edita.
-
-```markdown
-# Spec
-Un servicio FastAPI con login por email/contraseña, recuperación de contraseña con
-token enviado por email y límite de 100 peticiones/minuto por usuario. Postgres vía
-SQLAlchemy. Cada endpoint tiene un test de pytest.
-```
-
-**`.mae/plan.md`** — la cola de trabajo. El bloque del principio es lo que el motor usa
-para decidir qué hacer. Una línea por unidad de trabajo:
-
-```markdown
-<!-- ENGINE-STATUS
-Login flow: TODO
-Password reset: TODO
-Rate limiting: TODO
--->
-
-# Notas
-Todo lo que necesite más de una línea va aquí abajo. El motor nunca lo interpreta,
-pero el coder lo lee.
-```
-
-#### ¿Solo tienes la tarea, sin lista de TODOs?
-
-Es lo normal en la primera ejecución. Escribe la tarea y **no pongas el bloque**:
-
-```markdown
-# Tarea
-Implementar el servicio descrito en spec.md: login, recuperación de contraseña y
-límite de peticiones por usuario.
-```
-
-En la primera pasada el coder lee la especificación y la tarea, crea el bloque
-`ENGINE-STATUS` con una línea `TODO` por unidad y las va pasando a `DONE`. Al arrancar
-verás `This run: no task list yet — the coder writes it from the spec and plan`.
-
-A partir de la segunda ejecución el bloque ya existe: revísalo, corrige nombres o
-divide unidades si no te gusta cómo quedó, y sigue con el flujo normal. Si prefieres
-controlar la división desde el principio, escribe tú las líneas `TODO`.
-
-### 3. Ejecútalo
-
-```bash
-mae --repo ~/code/myproject        # o entra en la carpeta y ejecuta: mae
-```
-
-Antes de arrancar cualquier agente imprime lo que va a hacer — pulsa Ctrl-C si algo
-está mal:
-
-```
-Plan: TODO=3
-This run: Login flow, Password reset, Rate limiting
-Log: ~/code/myproject/.mae/runs/20260913-101500.jsonl
-Agents: coder=claude, reviewer=codex, auditor=codex
-Gates: pytest -q --tb=line --no-header ; ruff check . --output-format json
-[git] working on branch engine/20260913-101500
-```
-
-Después itera (coder → tests → revisor o auditor → coder …) hasta que todas las líneas
-estén en `DONE` o `BLOCKED` y la auditoría salga limpia. Una ejecución puede durar
-horas; déjala correr.
-
-### 4. Revisa lo que hizo
-
-Al terminar imprime el comando exacto:
-
-```bash
-git -C ~/code/myproject log --oneline <base>..engine/20260913-101500   # un commit por pasada
-git -C ~/code/myproject diff <base>                                     # la ejecución completa
-```
-
-Haz merge de la rama si te gusta, o `git reset --hard <sha>` a cualquier pasada si no.
-
-### 5. Pide más
-
-Añade o reabre una línea del bloque y vuelve a ejecutar `mae`:
-
-```
-Rate limiting: TODO — el límite es por usuario, no por IP
-Audit log for logins: TODO
-```
-
-Ese es todo el flujo diario: **edita el bloque, ejecuta `mae`, revisa la rama.**
-
----
-
-## Interfaz web — `mae-ui`
-
-Todo lo anterior también se hace desde el navegador:
-
-```bash
-mae-ui --repo ~/code/myproject          # abre http://127.0.0.1:8765/?token=…
-mae-ui --port 9000 --no-browser         # otro puerto; imprime la URL sin abrirla
-```
-
-- **Run** — el grafo coder → tester → reviewer/auditor con el nodo activo en vivo,
-  pasadas, errores de los gates, resultado de la auditoría y coste; elegir el runner y el
-  modelo de cada rol (la lista de modelos sale del propio endpoint), gates, tope de pasadas y
-  `--no-git`; lanzar y detener (detener = Ctrl-C: se conservan los checkpoints); consola en
-  vivo filtrable por agente.
-- **Plan & spec** — las unidades del bloque `ENGINE-STATUS` en columnas por estado:
-  añadir, cambiar de estado o borrar sin tocar el resto del plan; editores de `spec.md`,
-  `plan.md` y `.mae/config.json` (<kbd>Ctrl</kbd>+<kbd>S</kbd> guarda).
-- **Runs** — cada log de `.mae/runs/` con estado, pasadas y coste; su línea de tiempo y
-  los commits de checkpoint de la rama, con el diff de cada uno. El botón **Clear** borra
-  los logs de ejecuciones (el de la ejecución en curso se conserva); los checkpoints no se
-  tocan.
-
-La UI lanza el mismo `mae` como subproceso, una ejecución a la vez. Escucha solo en
-`127.0.0.1` y cada arranque genera un token que la API exige: abre la URL que imprime.
-Rechaza peticiones cuyo `Host` u `Origin` no sea esa dirección local (protección contra
-DNS rebinding). Con un repo abierto comprueba cada runner, pero **no envía la clave de API**
-a un endpoint que haya elegido el `.mae/config.json` del repo; la clave solo sale al lanzar.
-Ver [SECURITY.md](SECURITY.md).
-
----
-
-## Los dos archivos que son tuyos
-
-Viven **en el repo objetivo**, no en este. El motor no incluye documentos propios, así
-que una sola instalación sirve para cualquier número de proyectos.
-
-```
-<repo>/.mae/
-├── spec.md        --spec (por defecto)
-├── plan.md        --plan (por defecto)
-├── config.json    ajustes por repo (opcional)
-├── prompts/       prompts personalizados por repo (opcional)
-└── runs/          logs JSONL de cada ejecución (añádelo a .gitignore)
-```
-
-También pueden estar en otro sitio — con `--spec`/`--plan`, o con las claves
-`spec`/`plan` en `config.json`.
-
-### `spec.md` — la arquitectura (congelada)
-
-Requisitos, interfaces, modelos de datos, diagramas, invariantes. Solo tú lo editas. Se
-envía primero en cada prompt y no cambia entre iteraciones, así que queda en el prefijo
-cacheado del modelo y cuesta ~10% después de la primera llamada.
-
-### `plan.md` — la cola de trabajo (cambia constantemente)
-
-Contiene el **bloque de estado**, un comentario HTML que el motor interpreta:
-
-```
-<!-- ENGINE-STATUS
-Login flow: DONE
-Password reset: IN_PROGRESS
-Rate limiting: TODO — cambié la ventana a 60s
-Payment webhook: BLOCKED faltan las claves sandbox del proveedor
--->
-```
-
-Todo lo que está fuera del bloque es tuyo; al coder se le indica que no lo toque.
-
-| Estado | Significado | Comportamiento del motor |
-|---|---|---|
-| `TODO` | sin empezar, o lo reabriste | sigue trabajando |
-| `IN_PROGRESS` | empezado | sigue trabajando |
-| `DONE` | el código está escrito | no lo toca |
-| `BLOCKED` | necesita a una persona (credenciales, una decisión de producto) | deja de reintentar — escribe el motivo en la línea |
-
-Los estados se escriben siempre en inglés y en mayúsculas; el nombre de cada unidad
-puede estar en el idioma que quieras.
-
-Reglas importantes:
-
-- Un elemento por línea, `<nombre>: <ESTADO>`. El texto después del estado es una nota
-  libre y se conserva.
-- El nombre puede contener dos puntos y guiones (`Paso 6 — Pedidos: máquina de estados: DONE`
-  se interpreta bien).
-- El orden no importa — el bloque es un índice, no una secuencia.
-- Una línea que no se puede interpretar **se avisa al arrancar, no se descarta en silencio**.
-- Borrar `<!-- ENGINE-STATUS` o `-->` borra la memoria del motor sobre lo que está hecho.
-- Una línea `TODO — audit: …` la reabrió el auditor; la nota describe el problema. No la
-  pases a `DONE` a mano sin arreglarlo: la siguiente auditoría la volvería a reabrir.
-
-### Añadir y cambiar trabajo
-
-**La especificación es el contenido; el bloque de estado es el enrutamiento.** El coder
-lee toda la especificación, pero solo se ejecuta si el bloque tiene algo abierto. Editar
-solo la prosa, con todo en `DONE`, no cambia nada.
-
-| Quieres | Haz esto |
-|---|---|
-| Un cambio pequeño | Una línea: `Reintentos idempotentes en el job de sync: TODO` |
-| Corregir trabajo terminado | Reábrelo con una nota: `Rate limiting: TODO — por usuario, no por IP`. El coder entiende un `TODO` con código ya existente como "reconcilia con la nota nueva". |
-| Un subsistema nuevo | Descríbelo en la especificación (o debajo del bloque) y añade su línea. Usa el mismo nombre en ambos sitios para que el agente encuentre el detalle. |
-| Un bloque más corto | Borra líneas `DONE` antiguas. Deja al menos una — un bloque vacío se lee como "nunca empezado" y el coder rehace el plan desde cero. |
-
----
-
-## Flags y códigos de salida
-
-| Flag | Significado |
-|---|---|
-| `--repo DIR` | el repositorio que se construye (por defecto `.`) |
-| `--spec FILE` | documento de arquitectura (por defecto `<repo>/.mae/spec.md`) |
-| `--plan FILE` | cola de trabajo (por defecto `<repo>/.mae/plan.md`) |
-| `--allow-dir DIR` | directorio extra que el coder puede leer; repetible |
-| `--gate CMD` | comando de validación tras cada pasada del coder; repetible, reemplaza la lista del config; `--gate ''` desactiva todos los gates |
-| `--agent ROLE=RUNNER` | asigna un rol a `claude`, `codex`, `ollama` o `api`, p. ej. `--agent reviewer=claude`; cada runner acepta un mando tras `:` — modelo para `claude`/`ollama`/`api` (`--agent coder=ollama:qwen2.5-coder:14b`, `--agent coder=claude:opus`) y esfuerzo o modelo para `codex` (`--agent reviewer=codex:high`); repetible |
-| `--free` | todos los roles con el modelo local gratuito de Ollama; `--agent` y `"agents"` siguen cambiando roles sueltos |
-| `--max-iterations N` | tope de pasadas del coder (por defecto 15); debe superar el número de unidades abiertas |
-| `--log-dir DIR` | directorio del log JSONL (por defecto `<repo>/.mae/runs`) |
-| `--no-git` | omite la rama por ejecución y los commits por iteración |
-| `--version` | imprime la versión y sale |
-
-| Código | Significado |
-|---|---|
-| `0` | terminado y limpio: la cola está cerrada, los gates en verde y la auditoría sin hallazgos |
-| `1` | no terminó: tope de pasadas, un agente o un checkpoint falló, o la auditoría sigue encontrando problemas |
-| `2` | terminado, pero necesita que una persona mire: hay unidades `BLOCKED`, o no se ejecutó ningún gate |
-| `130` | interrumpido con Ctrl-C |
-| `143` | detenido con `SIGTERM` (`docker stop`, systemd, un job de CI cancelado) |
-
-Con Ctrl-C o `SIGTERM` el motor mata el grupo de procesos del agente, escribe `aborted` en el
-log y conserva los checkpoints; si llega a mitad de un commit, espera a que termine para no
-dejar `.git/index.lock` — también a los hooks de git del repo. Bajo `docker stop` o systemd,
-da un margen mayor que lo que tarden esos hooks (`docker stop -t 60`, `TimeoutStopSec=60`):
-pasado el margen llega un `SIGKILL`, que nadie puede interceptar. Antes de arrancar comprueba que las CLIs de cada rol y
-las herramientas de los gates configurados existen (un gate relativo como
-`scripts/check.sh` se busca dentro del repo), que los prompts de `.mae/prompts/` se
-pueden rellenar, y que el repo no está a mitad de un merge/rebase ni con un
-`index.lock` huérfano. Un gate configurado cuya herramienta falta es un error, no un
-aprobado silencioso, y uno que desaparece o se pasa de tiempo a mitad de la ejecución
-cuenta como rojo. Si un commit de checkpoint falla (identidad de git, un hook, la firma)
-la ejecución se detiene en vez de seguir sin puntos de rollback.
-
-Después de cada pasada del coder el tester también revisa el bloque de estado: un `-->`
-dentro de una nota, un segundo bloque, un estado mal escrito o una unidad que estaba
-abierta al empezar y ha desaparecido ponen la iteración en rojo, para que el coder lo
-arregle en vez de que la unidad se pierda en silencio.
-
-Una sola ejecución por archivo de plan: una segunda sale inmediatamente en vez de
-mezclar sus escrituras en el mismo bloque de estado.
-
-`--allow-dir` importa más de lo que parece: el coder se ejecuta con `--repo` como
-directorio de trabajo y **no puede leer fuera de él** sin esto. Los directorios de la
-especificación y del plan se añaden automáticamente; cualquier código de referencia lo
-añades tú:
-
-```bash
-mae --repo ~/code/myproject --allow-dir ~/code/reference-lib
-```
-
----
-
-## Ajustes por repo — `.mae/config.json`
-
-Opcional. Evita escribir flags en cada ejecución. Los flags de la CLI tienen prioridad.
-
-```json
-{
-  "spec": "docs/architecture.md",
-  "plan": "docs/queue.md",
-  "gates": [
-    "npm test -- --run",
-    {"cmd": "tsc --noEmit", "ok_codes": [0, 1]},
-    "eslint . -f json"
-  ],
-  "agents": {"reviewer": "claude", "auditor": "claude"},
-  "llm": {"ollama": {"model": "qwen2.5-coder:14b"}},
-  "max_iterations": 20,
-  "allow_dirs": ["~/code/reference-lib"]
-}
-```
-
-- `spec` / `plan` — relativos al repo; ponlos solo para sacarlos de `.mae/`.
-- `gates` — se ejecutan en orden. Cada entrada es un comando (código de salida 0 = pasa),
-  o `{"cmd", "ok_codes"}` cuando otros códigos también cuentan como pasar. `[]` = sin
-  gates. Si se omite = pytest y luego ruff.
-- `agents` — los roles son `coder`, `reviewer`, `auditor`; los runners son `claude`,
-  `codex`, `ollama` y `api` (estos dos con modelo opcional: `"ollama:llama3.1:8b"`).
-- `llm` — dónde están los modelos gratuitos; ver
-  [Modelos gratuitos](#modelos-gratuitos--sin-suscripción).
-
-Un gate pasado con `--gate` solo acepta el código de salida 0. pytest sale con 5 cuando
-no encuentra tests, así que en un repo todavía sin tests usa la forma del config
-`{"cmd": "pytest -q --tb=line", "ok_codes": [0, 5]}` (los gates por defecto ya lo hacen).
-
----
-
-## El bucle
-
-```
- spec + cola → CODER → TESTER → ¿tests pasan? ── no → REVIEWER → CODER
-                                     │
-                                     sí
-                                     ↓
-                     ¿quedan elementos abiertos? ── sí → CODER
-                                     │
-                                     no
-                                     ↓
-                      ¿última auditoría limpia? ── sí → FIN
-                                     │
-                                     no
-                                     ↓
-                                  AUDITOR ── ¿hallazgos? ── no → FIN
-                                                  │
-                                                  sí → reabre esas unidades (TODO) → CODER
-```
-
-Si dos pasadas seguidas del coder no cambian ningún archivo (con git activo), la ejecución
-se detiene en vez de seguir pagando por pasadas vacías.
-
-Toda vuelta al coder se detiene en `--max-iterations`. Es un tope, no un objetivo — el
-bucle termina en cuanto no queda nada abierto y la auditoría sale limpia.
-
-**CODER** (`claude`, puede editar archivos y ejecutar comandos, 90 min de presupuesto) — implementa los
-elementos abiertos, escribe tests para cada uno y ejecuta solo esos tests; pasa la línea a
-`DONE` cuando pasan, así una sesión interrumpida no pierde nada. Lo que necesita datos,
-red, credenciales o una decisión humana va a `BLOCKED` con el motivo, nunca a `DONE`. La
-suite completa la ejecuta el TESTER. Es el único agente que escribe código.
-
-**TESTER** (sin LLM, gratis) — ejecuta los gates en orden y convierte su salida en
-errores estructurados, con un máximo de 20:
-
-```json
-[{"file": "app/auth/login.py", "line": 84, "description": "assert 0 == 2"}]
-```
-
-El parseo prueba primero JSON de ruff/eslint, luego `ruta:línea[:col]: mensaje` (pytest
-`--tb=line`, ruff, mypy, tsc, eslint compact, `go vet`, gcc) y por último los 800 últimos
-caracteres de la salida en bruto. Una herramienta desconocida da un error poco preciso,
-pero nunca rompe el bucle. Una herramienta no instalada se omite. **Hace commit después
-de cada pasada**, también de las que fallan.
-
-**REVIEWER** (`codex`, solo lectura) — se ejecuta **solo cuando el build falla**. Ve la
-especificación, la cola, los errores y el diff de la pasada que acaba de fallar; devuelve
-las causas raíz en JSON:
-
-```json
-{"problems": [{"file": "...", "line": 84, "description": "por qué falla",
-               "suggested_fix": "qué cambiar"}]}
-```
-
-**AUDITOR** (`codex`, solo lectura) — se ejecuta cuando los tests pasan y la cola está
-cerrada. El coder se corrige a sí mismo, así que el auditor lee el diff de toda la
-ejecución contra la especificación y reporta unidades marcadas `DONE` que están a medias,
-contradicen la especificación, no tienen test para un comportamiento requerido o afirman
-un criterio de salida imposible de cumplir sin datos. Se limita a las unidades que estaban
-abiertas al empezar la ejecución.
-
-Cada hallazgo indica su unidad, y **el motor la reabre**: la línea pasa a
-`TODO — audit: <hallazgo>`. El coder la arregla, los tests vuelven a pasar y **la
-auditoría se repite** hasta salir limpia. Solo una auditoría sin hallazgos termina la
-ejecución. Las unidades `BLOCKED` no se reabren.
-
-Los diffs que se envían al revisor y al auditor van completos si son cortos (menos de 2000
-caracteres); si son largos, solo el `--stat` y los agentes de solo lectura abren los
-archivos cambiados ellos mismos.
-
----
-
-## Modelos gratuitos — sin suscripción
-
-El motor trae su propio agente (`engine/llm.py`, solo biblioteca estándar) que habla con
-cualquier endpoint compatible con OpenAI y le da al modelo las mismas herramientas que
-tienen las CLIs: listar, leer y buscar archivos y, para el coder, escribir y editar
-archivos y ejecutar comandos — así puede correr los tests que `DONE` exige. El revisor y
-el auditor solo reciben las herramientas de lectura. Fuera del repo solo puede tocar los
-directorios de la especificación, del plan y de `--allow-dir`.
-
-### Local con Ollama (recomendado, gratis)
-
-```bash
-# 1. Instala Ollama: https://ollama.com/download (Linux: curl -fsSL https://ollama.com/install.sh | sh)
-# 2. Descarga un modelo con soporte de herramientas
-ollama pull qwen2.5-coder:7b          # ~5 GB; con 16 GB+ de RAM prueba qwen2.5-coder:14b
-# 3. Dale contexto suficiente (el valor por defecto de Ollama corta prompts largos)
-OLLAMA_CONTEXT_LENGTH=32768 ollama serve
-# 4. Ejecuta
-mae --free
-```
-
-Por defecto usa `qwen2.5-coder:7b` en `http://localhost:11434/v1`. Para cambiarlo:
-
-```bash
-mae --free --agent coder=ollama:qwen2.5-coder:14b      # un modelo mayor solo para el coder
-export MAE_OLLAMA_MODEL=llama3.1:8b                    # otro modelo por defecto
-export MAE_OLLAMA_URL=http://otra-maquina:11434/v1     # Ollama en otra máquina
-```
-
-o en `.mae/config.json`: `"llm": {"ollama": {"url": "...", "model": "..."}}`. Antes de
-arrancar, `mae` comprueba que Ollama responde y que el modelo está descargado, y si no
-te dice qué ejecutar.
-
-### Una API gratuita (runner `api`)
-
-Cualquier servicio compatible con OpenAI. Con un plan gratuito no pagas nada; ten en
-cuenta sus límites por minuto (el motor reintenta los 429 respetando `Retry-After`).
-
-```json
-{
-  "agents": {"coder": "api", "reviewer": "api", "auditor": "ollama"},
-  "llm": {"api": {"url": "https://openrouter.ai/api/v1",
-                  "model": "qwen/qwen-2.5-coder-32b-instruct:free",
-                  "key_env": "OPENROUTER_API_KEY"}}
-}
-```
-
-`key_env` es el nombre de la variable de entorno con la clave (por defecto
-`MAE_API_KEY`); la clave nunca va en el archivo. También sirven `MAE_API_URL` y
-`MAE_API_MODEL`. Por seguridad, `key_env` solo puede ser un nombre `MAE_*` o la clave de un
-proveedor de modelos conocido (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`, …);
-para usar otra variable, añádela tú en tu entorno: `export MAE_ALLOWED_KEY_ENVS=MI_VARIABLE`.
-`url` debe ser `http(s)://`, la clave nunca viaja por `http` sin cifrar salvo a esta misma
-máquina, no sigue redirecciones y nunca se escribe en el log. Al arrancar, `mae` imprime a qué
-host va cada clave.
-
-### Qué esperar
-
-Un modelo local de 7–14 B es mucho más lento y menos capaz que `claude` o `codex`:
-funciona bien en unidades pequeñas y bien especificadas, y le cuesta más con cambios
-grandes. Divide el plan en unidades pequeñas, sube `--max-iterations`, o mezcla: un
-modelo gratuito para revisor y auditor y uno mejor para el coder. El coste que se
-registra para estos runners es 0; los tokens sí se cuentan.
-
-En `mae-ui`, cada rol tiene un selector de runner (`ollama`, `api`, `claude`, `codex`), un
-selector de modelo con los que ofrece el endpoint, y el botón **Use Ollama for all three**.
-
----
-
-## Roles, CLIs y prompts
-
-Qué CLI cumple cada rol es configuración:
-
-```bash
-mae --agent reviewer=claude --agent auditor=claude    # solo claude, sin necesidad de codex
-```
-
-Todas las funciones que lanzan una CLI aceptan los mismos argumentos (`write`,
-`add_dirs`, `schema`, `timeout`), así que añadir otra CLI es una función más una
-entrada en `RUNNERS` en `engine/cli.py`. Dos limitaciones de las que el motor avisa:
-`codex` no tiene `--add-dir`, y `claude` no tiene esquema de salida, así que se le pide
-JSON en el prompt.
-
-Los prompts son archivos: `engine/prompts/{coder,reviewer,auditor}.md`. Para cambiar uno
-en un solo proyecto, cópialo a `<repo>/.mae/prompts/<rol>.md` y edítalo — el motor avisa
-cuando usa uno personalizado. Los marcadores son `{nombre}`; uno desconocido falla al
-arrancar con la lista de nombres disponibles; una llave literal debe duplicarse `{{ }}`.
-
----
-
-## Checkpoints
-
-Antes de la primera pasada el motor crea una rama en el repo objetivo y hace commit de
-tu trabajo sin commitear como punto de partida, así nada tuyo se pierde ni se mezcla con
-los diffs del agente:
-
-```
-[git] working on branch engine/20260913-101500
-[git] 37aeaf3 engine: iteration 1 — 3 error(s)
-[git] a91c02b engine: iteration 2 — green
-```
-
-```bash
-git -C <repo> diff HEAD~1          # lo que hizo la última pasada
-git -C <repo> reset --hard <sha>   # volver a cualquier pasada
-```
-
-Los checkpoints nunca incluyen `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
-`__pycache__/` ni `.mae/runs/`, aunque el `.gitignore` del repo los olvide.
-
-¿No es un repo git? La ejecución funciona igual, sin protección, y lo avisa. `--no-git`
-lo desactiva a propósito.
-
----
-
-## El log de ejecución
-
-Un archivo JSONL por ejecución en `<repo>/.mae/runs/`:
-
-```bash
-tail -f <repo>/.mae/runs/*.jsonl                                                      # en vivo
-jq -r 'select(.event=="agent") | "\(.label) \(.seconds)s $\(.cost_usd)"' <repo>/.mae/runs/*.jsonl
-jq 'select(.event=="finish") | .usage' <repo>/.mae/runs/*.jsonl
-```
-
-Eventos: `start`, `agent` (por llamada a la CLI: segundos, tokens, coste), `gate`,
-`checkpoint`, `limit` (esperas por límite de uso), `finish` / `aborted`. Una ejecución
-interrumpida igualmente escribe `aborted` y conserva sus checkpoints.
-
----
-
-## Coste y límites
-
-El prompt del coder pone primero el contenido estable (especificación + instrucciones,
-cacheado a ~10%) y al final el variable (cola + hallazgos, precio completo). Comprueba
-que la caché funciona en la línea de progreso — un `cache_read` alto es lo que buscas:
-
-```
-[coder] done — in=1204 cache_read=2610 out=880 cost=$0.0431
-```
-
-Solo las respuestas finales de los agentes entran en el estado del grafo, nunca sus
-transcripciones; el tester no cuesta nada; el revisor solo se ejecuta cuando algo falla
-y el auditor solo con la cola cerrada (repitiéndose hasta salir limpio).
-
-Si una CLI se detiene por un límite de uso, el motor espera hasta la hora de reinicio
-que aparece en su salida (30 min si no hay ninguna), hasta 4 veces por llamada:
-
-```
-[coder] limit reached — sleeping 47 min, resuming ~15:32
-```
-
-Las esperas de más de 6 horas se rechazan indicando la fecha de reinicio — vale la pena
-esperar un límite de sesión, no un tope mensual. Ctrl-C mata todo el grupo de procesos
-del agente, y la siguiente ejecución continúa desde el bloque de estado.
-
----
-
-## Solución de problemas
-
-Los mensajes del motor están en inglés; aquí aparecen tal cual para que puedas buscarlos.
-
-| Síntoma | Causa y solución |
-|---|---|
-| `spec file not found: <repo>/.mae/spec.md` | Créalo, o apunta `--spec` / `"spec"` al tuyo. La versión `plan` de este error imprime un bloque inicial para copiar. |
-| `has nothing left open — every item is DONE or BLOCKED` | Funciona como debe. Añade una línea `TODO` o reabre una. |
-| `WARNING: unreadable status line, it will be ignored` | Un estado inventado (`PENDIENTE`) o falta de dos puntos. Corrige la línea. |
-| Escribiste una sección nueva pero no se ejecuta nada | La prosa no participa en el enrutamiento. Añade una línea `<nombre>: TODO` dentro del bloque. |
-| `unknown CLI 'x' for coder` / `unknown role` | Error de escritura en `--agent` o `"agents"`. Roles: coder, reviewer, auditor. Runners: claude, codex, ollama, api. |
-| `the claude CLI is not on PATH` y no tienes suscripción | Usa `mae --free` (Ollama) o el runner `api` con un plan gratuito. |
-| `Ollama is not reachable at http://localhost:11434/v1` | Ollama no está instalado o no está corriendo: instálalo y ejecuta `ollama serve`. |
-| `Ollama has no model 'qwen2.5-coder:7b'` | `ollama pull qwen2.5-coder:7b`, o elige uno que ya tengas con `--agent ROLE=ollama:<modelo>`. |
-| El modelo local responde sin usar herramientas o ignora el plan | Contexto demasiado corto: arranca Ollama con `OLLAMA_CONTEXT_LENGTH=32768`, o usa un modelo mayor. |
-| `another run already holds <plan>` | Hay otra ejecución sobre ese plan. Espera o termínala. |
-| El lint pasa en todo | `ruff` de **snap** no puede escribir su caché en `/tmp` y devuelve `[]` con código 0. `snap remove ruff && pip install ruff`, o mantén el repo objetivo dentro de `$HOME`. |
-| `codex ... failed to refresh available models` | Inofensivo; el motor oculta la línea de log de 325 KB. `npm i -g @openai/codex@latest` lo arregla. |
-| El coder no actualizó el plan | No podía acceder al archivo. Los directorios de spec y plan se permiten automáticamente; cualquier otro necesita `--allow-dir`. |
-| El coder deja las unidades en `IN_PROGRESS` porque "no puede ejecutar pytest" | Versión anterior del motor: `claude -p` en `acceptEdits` rechaza Bash. Ahora el coder recibe `--allowedTools Bash`. |
-| `Stopped early: 2 coder passes in a row changed nothing` | El coder no avanza. Lee su última salida: suele pedir algo (permiso, dato, decisión). |
-| El bucle termina con unidades abiertas | Llegó a `--max-iterations`. Súbelo por encima del número de unidades abiertas y vuelve a ejecutar — continúa donde lo dejó. |
-| `[auditor] reopened: …` | El auditor encontró problemas en unidades `DONE`; el motor las volvió a `TODO` con el hallazgo como nota. Es lo esperado: el coder las arregla y se audita otra vez. |
-| Termina en el tope con `audit_clean=False` | El auditor sigue encontrando problemas. Lee las notas `audit:` del plan y los `problems` impresos al final; corrige la especificación si pide algo imposible, o marca la unidad `BLOCKED`. |
-
----
-
-## Buenas prácticas
-
-- Haz commit de `<repo>/.mae/` junto con su proyecto; añade `.mae/runs/` al `.gitignore`.
-- El bloque de estado es el único estado que sobrevive entre ejecuciones; si un agente lo
-  estropea, `git diff` te lo muestra.
-- Borra las ramas de ejecuciones antiguas una vez fusionadas o descartadas:
-  `git -C <repo> branch -D $(git -C <repo> branch --list 'engine/*')`.
-
----
+Para pedir más trabajo, añade o reabre una línea del bloque `ENGINE-STATUS` y vuelve a ejecutar `mae`.
+¿Prefieres el navegador? `mae-ui --repo ~/code/myproject` abre el panel.
+
+Los estados del bloque (`TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`) se escriben siempre en inglés y en
+mayúsculas; el nombre de cada unidad puede estar en el idioma que quieras.
+
+## Documentación
+
+La documentación completa (en inglés) está en **<https://miltonjoel.github.io/MultiAgentEngine/>**:
+
+- [Getting started](https://miltonjoel.github.io/MultiAgentEngine/getting-started/) — instalación, los dos archivos, la primera ejecución
+- [Plan and spec](https://miltonjoel.github.io/MultiAgentEngine/guide/plan-and-spec/) — el bloque de estado y cómo añadir trabajo
+- [Free models](https://miltonjoel.github.io/MultiAgentEngine/guide/free-models/) — Ollama y APIs compatibles con OpenAI
+- [CI, Docker and signals](https://miltonjoel.github.io/MultiAgentEngine/guide/ci/) — ejecución desatendida
+- [The loop](https://miltonjoel.github.io/MultiAgentEngine/concepts/loop/) — cómo encajan los roles
+- Referencia: [línea de comandos](https://miltonjoel.github.io/MultiAgentEngine/reference/cli/) ·
+  [configuración](https://miltonjoel.github.io/MultiAgentEngine/reference/config/) ·
+  [log de ejecución](https://miltonjoel.github.io/MultiAgentEngine/reference/run-log/) ·
+  [runners y prompts](https://miltonjoel.github.io/MultiAgentEngine/reference/runners/)
+- [Troubleshooting](https://miltonjoel.github.io/MultiAgentEngine/troubleshooting/) — los mensajes del
+  motor están en inglés; búscalos tal cual
+
+Las mismas páginas están en [`docs/`](https://github.com/MiltonJoel/MultiAgentEngine/tree/master/docs) si lo lees sin conexión.
 
 ## Seguridad
 
-El motor ejecuta agentes que **corren comandos en tu máquina** con tus permisos. Antes de
-usarlo con especificaciones, planes o repositorios que no son tuyos, lee
-[SECURITY.md](SECURITY.md): explica el modelo de amenazas (gates y prompts por repo, el panel
-web, las claves de API, los checkpoints) y cómo reportar una vulnerabilidad de forma privada.
+Los agentes **ejecutan comandos en tu máquina** con tus permisos. Antes de usar el motor con
+especificaciones, planes o repositorios que no son tuyos, lee [SECURITY.md](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/SECURITY.md): explica el modelo
+de amenazas y cómo reportar una vulnerabilidad de forma privada.
 
-En resumen: ejecuta repos ajenos dentro de un contenedor o una VM, revisa su
-`.mae/config.json` y `.mae/prompts/` antes de lanzar `mae`, y no compartas la URL de `mae-ui`
-(contiene el token).
-
----
-
-## Desarrollo
-
-```
-MultiAgentEngine/
-├── pyproject.toml       dependencias, `mae`/`mae-ui`, ruff, mypy, pytest y coverage
-├── CHANGELOG.md         cambios por versión
-├── CONTRIBUTING.md      cómo preparar el entorno y qué exige un pull request
-├── SECURITY.md          modelo de amenazas y cómo reportar una vulnerabilidad
-├── engine/
-│   ├── __init__.py      __version__ (única fuente de la versión)
-│   ├── __main__.py      `python -m engine`
-│   ├── main.py          parseo de la CLI, config, validación, bloqueo del plan, run()
-│   ├── graph.py         parseo del bloque de estado, enrutamiento, grafo de LangGraph
-│   ├── state.py         GraphState
-│   ├── cli.py           funciones para claude/codex (RUNNERS), esperas por límite de uso
-│   ├── llm.py           agente propio para modelos gratuitos (Ollama / API compatible con OpenAI)
-│   ├── git.py           rama por ejecución, checkpoints, diffs
-│   ├── prompts.py       carga de prompts con personalización por repo
-│   ├── prompts/         coder.md, reviewer.md, auditor.md
-│   ├── runlog.py        log JSONL, totales de coste y tokens
-│   ├── ui.py            servidor de `mae-ui` (stdlib), API con token
-│   ├── ui.html          la página de `mae-ui`, sin dependencias
-│   └── nodes/
-│       ├── coder.py     agente de implementación
-│       ├── tester.py    gates deterministas y parseo de su salida
-│       └── reviewer.py  revisor y auditor (esquema compartido)
-└── tests/
-    ├── test_engine.py   parseo del plan, enrutamiento, parseo de salidas, log
-    ├── test_modular.py  rol→CLI, prompts, documentos, gates, diffs, config
-    ├── test_ops.py      checkpoints, bloqueo del plan, pasadas vacías
-    ├── test_llm.py      modelos gratuitos contra un servidor compatible con OpenAI simulado
-    ├── test_robustness.py  casos límite del plan, git, límites de uso, ejecuciones completas
-    ├── test_hardening.py   confinamiento, credenciales, auditoría fail-closed, guardas HTTP, señales
-    └── test_ui.py       API de la UI, token, ejecución completa con una CLI simulada
-```
+## Contribuir
 
 ```bash
+git clone https://github.com/MiltonJoel/MultiAgentEngine.git && cd MultiAgentEngine
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ruff check . && mypy && python -m pytest -q --cov
 ```
 
-GitHub Actions (`.github/workflows/tests.yml`) repite esto en un clon limpio con Python
-3.10 a 3.13 (Linux) y 3.12 (macOS) en cada push y pull request, exige un 80 % de
-cobertura, construye el paquete y comprueba que el wheel se instala. Al subir un tag
-`vX.Y.Z`, `.github/workflows/release.yml` lo publica en PyPI.
-
-Nada dentro de `engine/` es específico de un proyecto. Si te ves editándolo para
-apuntar a un proyecto, eso pertenece al `.mae/` del repo objetivo.
-
-Ver [CONTRIBUTING.md](CONTRIBUTING.md) para el flujo de trabajo, las reglas del proyecto y cómo
-se publica una versión, y [CHANGELOG.md](CHANGELOG.md) para el historial de cambios.
-
----
+Ver [CONTRIBUTING.md](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/CONTRIBUTING.md) para el flujo de trabajo y la documentación, y
+[CHANGELOG.md](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/CHANGELOG.md) para el historial de cambios.
 
 ## Licencia
 
-[MIT](LICENSE) © 2026 MiltonJoel
+[MIT](https://github.com/MiltonJoel/MultiAgentEngine/blob/master/LICENSE) © 2026 MiltonJoel

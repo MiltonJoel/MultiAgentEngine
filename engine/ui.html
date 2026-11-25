@@ -319,7 +319,7 @@ nav.tabs button:focus-visible { outline-offset: -2px; }
 .board .col { padding: 8px 12px 0; border-left: 1px solid var(--line); }
 .board .col:first-child { border-left: 0; padding-left: 0; }
 .board .col h3 { margin-bottom: 4px; }
-.board .unit .ctl { margin-left: auto; justify-content: flex-end; }
+.board .unit .ctl { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; max-width: 100%; }
 /* state changes: drag the tile on a fine pointer, pick from the select on touch */
 @media (pointer: fine) {
   .unit.edit .ctl select { display: none; }   /* the chip is the readout; the mouse does the rest */
@@ -1070,7 +1070,7 @@ function renderLive() {
   $("iterLabel").textContent = live.node ? `now: ${live.node}` : "";
   const pill = $("status");
   pill.className = "pill" + (live.running ? " running" : live.ended === 0 ? " clean" : live.ended !== null ? " failed" : "");
-  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Done, clean" : live.ended === 2 ? "Done, needs review" : `Ended (exit ${live.ended})`;
+  $("statusText").textContent = live.running ? `Running · ${live.node || "starting"}` : live.ended === null ? "Idle" : live.ended === 0 ? "Done, clean" : live.ended === 2 ? "Done, needs review" : live.ended === 3 ? "Refused to start" : `Ended (exit ${live.ended})`;
   renderLaunchState();
 }
 
@@ -1090,7 +1090,7 @@ async function poll() {
     const wasRunning = live.running;
     live.running = out.running;
     if (!out.running && out.exit_code !== null) live.ended = out.exit_code;
-    if (wasRunning && !out.running) { refreshState().catch(() => {}); guard(loadRuns)(); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
+    if (wasRunning && !out.running) { refreshState().catch(() => {}); guard(loadRuns)(); toast(out.exit_code === 0 ? "Run finished clean" : out.exit_code === 2 ? "Run finished, needs review: BLOCKED units or no gates" : out.exit_code === 3 ? "Run refused to start — the output says why; nothing was changed" : `Run ended (exit ${out.exit_code})`, out.exit_code !== 0 && out.exit_code !== 2); }
     if (out.repo && !repo) openRepo(out.repo);
   } catch (e) {
     if (/token/.test(e.message)) { toast(e.message, true); return; }

@@ -20,3 +20,5 @@ workspace/
 .claude/
 .idea/
 .vscode/
+# built documentation site
+site/
