@@ -32,7 +32,7 @@ def _format(source: Path, fields: dict) -> str:
         raise SystemExit(f"{source}: not valid UTF-8 ({exc.reason} at byte {exc.start}) — save it as UTF-8")
     try:
         return text.format(**fields)
-    except (KeyError, IndexError, ValueError) as exc:
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:  # {x}, {0}, {x.y}, {x[0]}…
         raise SystemExit(
             f"{source}: bad placeholder ({type(exc).__name__}: {exc}) — available: {', '.join(sorted(fields))}. "
             "A literal brace in a prompt must be doubled: {{ }}"

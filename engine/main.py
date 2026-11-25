@@ -5,7 +5,7 @@ import os
 import shutil
 import signal
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -34,8 +34,10 @@ CONFIG = f"{MAE_DIR}/config.json"
 DEFAULT_SPEC = "spec.md"
 DEFAULT_PLAN = "plan.md"
 # Exit codes, usable from CI. NEEDS_REVIEW: the queue closed green and audited, but a human still has to
-# look — some units are BLOCKED, or no gate ran so "green" checked nothing.
-EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW = 0, 1, 2
+# look — some units are BLOCKED, or no gate ran so "green" checked nothing. REFUSED: the run never started
+# (bad arguments or config, a missing tool, a busy repo or plan, nothing left open) — no agent ran, nothing
+# was spent, nothing changed; its own code so CI never mistakes it for a run's verdict.
+EXIT_CLEAN, EXIT_FAILED, EXIT_NEEDS_REVIEW, EXIT_REFUSED = 0, 1, 2, 3
 EXIT_INTERRUPTED, EXIT_TERMINATED = 130, 143  # 128 + SIGINT / SIGTERM, as a shell reports them
 
 NEW_PLAN = """<!-- ENGINE-STATUS
@@ -176,8 +178,44 @@ def _on_sigterm(signum, frame):
     raise Terminated()
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would read as EXIT_NEEDS_REVIEW; every refusal exits 3."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_REFUSED, f"{self.prog}: error: {message}\n")
+
+
+@contextmanager
+def _refusals():
+    """Anything that stops the run before it starts is a refusal: print it like a usage error and exit
+    EXIT_REFUSED. That is a SystemExit carrying a message (bad config, locked plan, broken prompt override…), an
+    OSError from reading the config/plan/prompts or resolving a path, and Python 3.10's symlink-loop
+    RuntimeError. Numeric exits (usage errors, --help) and a broken stdout pipe pass through untouched."""
+    try:
+        yield
+    except SystemExit as exc:
+        if exc.code is None or isinstance(exc.code, int):
+            raise
+        reason = str(exc.code)
+    except BrokenPipeError:  # stdout went away (`mae ... | head`): not a reason to call the run refused
+        raise
+    except OSError as exc:  # an unreadable config, plan or prompt; a path that cannot be resolved
+        reason = f"{exc.filename + ': ' if exc.filename else ''}{exc.strerror or exc}"
+    except RuntimeError as exc:
+        if "Symlink loop" not in str(exc):  # Python 3.10's Path.resolve(); any other RuntimeError is a bug
+            raise
+        reason = str(exc)
+    else:
+        return
+    print(f"mae: error: {reason}", file=sys.stderr)
+    raise SystemExit(EXIT_REFUSED) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mae", description="AI software engineering loop")
+    parser = _Parser(prog="mae", description="AI software engineering loop",
+                     epilog="Exit codes: 0 clean, 1 failed, 2 needs review, 3 refused to start, "
+                            "130 interrupted, 143 terminated.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--spec", metavar="FILE",
                         help=f"Architecture doc, never edited by the engine (default: <repo>/{MAE_DIR}/{DEFAULT_SPEC})")
@@ -208,9 +246,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    with _refusals():
+        prepared = _prepare(parser, args)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        with ExitStack() as stack:
+            with _refusals():  # another run holding the plan is a refusal; failing inside the run is not
+                stack.enter_context(_plan_lock(prepared["plan"]))
+            code = run(**prepared, no_git=args.no_git)
+    except Terminated:
+        sys.exit(EXIT_TERMINATED)
+    except KeyboardInterrupt:
+        sys.exit(EXIT_INTERRUPTED)
+    sys.exit(code)
+
+
+def _prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
+    """Every check that can refuse the run, before any agent starts; returns run()'s arguments."""
     if fcntl is None or os.name != "posix":
-        raise SystemExit("mae runs on Linux and macOS only (it manages process groups and POSIX file locks) "
-                         "— on Windows, run it inside WSL")
+        raise SystemExit("this tool runs on Linux and macOS only (it manages process groups and POSIX file "
+                         "locks) — on Windows, run it inside WSL")
 
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
@@ -223,9 +278,10 @@ def main():
 
     configured = args.gate if args.gate is not None else config.get("gates")
     try:
-        gates = _check_gates(parser, build_gates(configured), configured is not None, repo)
+        built = build_gates(configured)
     except SystemExit as exc:
         parser.error(str(exc))
+    gates = _check_gates(parser, built, configured is not None, repo)
     try:
         llm.configure(config.get("llm"))
     except SystemExit as exc:
@@ -247,16 +303,31 @@ def main():
     if plan_done(str(plan)):
         parser.error(f"{plan} has nothing left open — every item is DONE or BLOCKED. "
                      "Add a `<name>: TODO` line inside the ENGINE-STATUS block.")
+    # expanded once, here: `--log-dir=~/x` reaches us with a literal ~ (the shell only expands a leading one),
+    # and the directory checked must be the directory written
+    log_dir = Path(args.log_dir).expanduser().resolve() if args.log_dir else repo / MAE_DIR / "runs"
+    _check_log_dir(parser, log_dir)
+    return {"spec": spec, "plan": plan, "repo": repo, "allow_dirs": allow_dirs, "agents": agents, "gates": gates,
+            "max_iterations": max_iterations, "log_dir": str(log_dir)}
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
-    try:
-        with _plan_lock(plan):
-            code = run(spec, plan, repo, allow_dirs, agents, gates, max_iterations, args.log_dir, args.no_git)
-    except Terminated:
-        sys.exit(EXIT_TERMINATED)
-    except KeyboardInterrupt:
-        sys.exit(EXIT_INTERRUPTED)
-    sys.exit(code)
+
+def _check_log_dir(parser: argparse.ArgumentParser, log_dir: Path) -> None:
+    """The run log is the first thing a run writes; a log directory it cannot create is a refusal, not a crash
+    after the branch exists. Checked without creating anything."""
+    path = log_dir.resolve()  # a dangling symlink resolves to its target, which the run then creates
+    if path.exists():
+        if not path.is_dir():
+            parser.error(f"--log-dir is not a directory: {path}")
+        if not os.access(path, os.W_OK | os.X_OK):
+            parser.error(f"--log-dir is not writable: {path}")
+        return
+    parent = path.parent
+    while not os.path.lexists(parent):
+        parent = parent.parent
+    if not parent.is_dir():
+        parser.error(f"--log-dir {path} cannot be created: {parent} is a file, not a directory")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        parser.error(f"--log-dir {path} cannot be created: {parent} is not writable")
 
 
 def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[str, str],
@@ -280,7 +351,13 @@ def run(spec: Path, plan: Path, repo: Path, allow_dirs: list[str], agents: dict[
         if branch:
             # commit pre-existing dirty work on its own so every later checkpoint is the coder's alone;
             # a commit that fails here would fail every pass, so stop before paying for one
-            git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run", strict=True)
+            try:
+                git.checkpoint(str(repo), "engine: baseline — uncommitted work from before the run", strict=True)
+            except git.CheckpointError as exc:  # before any agent: say why, keep the log honest, spend nothing
+                runlog.log("aborted", error=f"CheckpointError: {exc}", branch=branch, usage=runlog.totals())
+                print(f"\nAborted before any agent ran: {exc}\nThe branch {branch} was created and is empty "
+                      f"— delete it with: git -C {repo} branch -D {branch}", file=sys.stderr)
+                return EXIT_FAILED
             base_sha = git.head(str(repo))
     else:
         print(f"[git] {repo} is not a git repository — running without checkpoints or rollback")
